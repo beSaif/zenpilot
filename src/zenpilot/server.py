@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+import os
 import signal
 import sys
 import time
@@ -45,8 +46,8 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
             try:
                 if mutates and cfg.read_only:
                     raise Blocked(f"zenpilot is in read-only mode ({CONFIG_PATH}), so {fn.__name__} is disabled.")
-                await browser.connect(cfg.port)
-                result = await fn(**kwargs)
+                async with browser.session(cfg.port):
+                    result = await fn(**kwargs)
                 ok = True
                 return result
             except (Blocked, BrowserError) as e:
@@ -210,20 +211,21 @@ async def get_text(tab_id: str | None = None, max_chars: int = 8000) -> str:
 
 
 async def _serve() -> None:
+    # Firefox keeps a BiDi session alive after its socket drops, which would lock
+    # Zen until restart, so the session is ended explicitly on every way out.
+    async def exit_on_signal():
+        with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT, signal.SIGHUP) as signals:
+            async for _ in signals:
+                with anyio.move_on_after(3):
+                    await browser.close()
+                # The stdio transport blocks in a thread read that cancellation can't interrupt.
+                os._exit(0)
+
     async with anyio.create_task_group() as tg:
-
-        async def stop_on_signal():
-            with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT, signal.SIGHUP) as signals:
-                async for _ in signals:
-                    tg.cancel_scope.cancel()
-                    return
-
-        tg.start_soon(stop_on_signal)
+        tg.start_soon(exit_on_signal)
         try:
-            await mcp.run_stdio_async()
+            await mcp.run_stdio_async()  # returns when the client closes stdin
         finally:
-            # Firefox keeps a BiDi session alive after its socket drops, which would
-            # lock Zen until restart, so always end it explicitly.
             with anyio.CancelScope(shield=True), anyio.move_on_after(3):
                 await browser.close()
             tg.cancel_scope.cancel()

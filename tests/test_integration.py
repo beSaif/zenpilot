@@ -4,6 +4,7 @@ Needs Zen running with --remote-debugging-port 9222 (the `zenr` alias); skipped 
 Uses its own temp config, so your allowlist and audit log are untouched.
 """
 
+import asyncio
 import base64
 import functools
 import http.server
@@ -239,3 +240,24 @@ async def test_read_only_mode_and_audit_log(site, config):
     assert typed["domain"] == "localhost"
     assert all({"ts", "params", "domain", "ok", "ms"} <= r.keys() for r in records)
     assert any(not r["ok"] and "read-only" in r["error"] for r in records)
+
+
+async def test_idle_release_lets_another_client_in(monkeypatch):
+    from zenpilot import browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "IDLE_RELEASE_SECONDS", 0.2)
+    first, second = browser_mod.Browser(), browser_mod.Browser()
+    try:
+        async with first.session(9222):
+            await first.tabs()
+            with pytest.raises(browser_mod.BrowserError, match="already has an active automation session"):
+                await second.connect(9222)
+        await asyncio.sleep(0.5)  # first goes idle and ends its session
+        async with second.session(9222):
+            assert await second.tabs()
+        await asyncio.sleep(0.5)
+        async with first.session(9222):  # the first reconnects transparently
+            assert await first.tabs()
+    finally:
+        await first.close()
+        await second.close()

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 import websockets
 
@@ -11,8 +12,11 @@ from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, render, unwrap
 
 # BiDi errors that mean "this node or frame no longer exists".
 STALE_ERRORS = {"no such node", "no such element", "stale element reference", "detached shadow root", "no such frame"}
-ENTER, BACKSPACE = "", ""
-SPECIAL_KEYS = {"\n": ENTER, "\t": ""}
+ENTER, BACKSPACE = "\ue007", "\ue003"  # WebDriver key codes
+SPECIAL_KEYS = {"\n": ENTER, "\t": "\ue004"}
+# Firefox allows one BiDi session. Releasing it when idle lets Claude Desktop and
+# several Claude Code sessions take turns; refs and tab ids expire with it.
+IDLE_RELEASE_SECONDS = 120
 
 # Scrolls the element into view and reports anything covering its center.
 PREPARE_JS = """(el) => {
@@ -96,6 +100,8 @@ class Browser:
         self._tab_ids: dict[str, str] = {}  # context -> "t1"
         self._contexts: dict[str, str] = {}  # "t1" -> context
         self._last_used: str | None = None  # context zenpilot last opened, switched to or navigated
+        self._busy = 0
+        self._idle_timer: asyncio.TimerHandle | None = None
         self.refs = Refs()
 
     # -- connection -------------------------------------------------------
@@ -125,14 +131,37 @@ class Browser:
                         "without ending its session; in that case Zen must be restarted."
                     ) from None
                 raise
-            await bidi.send("session.subscribe", {"events": [
-                "browsingContext.navigationStarted", "browsingContext.load", "browsingContext.contextCreated",
-            ]})
+            try:
+                await bidi.send("session.subscribe", {"events": [
+                    "browsingContext.navigationStarted", "browsingContext.load", "browsingContext.contextCreated",
+                ]})
+            except BaseException:
+                await bidi.close()  # don't leave an orphaned session behind
+                raise
             self._bidi = bidi
 
     async def close(self) -> None:
         if self._bidi:
             await self._bidi.close()
+
+    @asynccontextmanager
+    async def session(self, port: int):
+        """Hold the BiDi session for one tool call; release it after a quiet period."""
+        if self._idle_timer:
+            self._idle_timer.cancel()
+        self._busy += 1
+        try:
+            await self.connect(port)
+            yield
+        finally:
+            self._busy -= 1
+            loop = asyncio.get_running_loop()
+            self._idle_timer = loop.call_later(IDLE_RELEASE_SECONDS, lambda: loop.create_task(self._release_if_idle()))
+
+    async def _release_if_idle(self) -> None:
+        async with self._lock:
+            if self._busy == 0:
+                await self.close()
 
     async def call(self, method: str, params: dict | None = None, timeout: float = 30) -> dict:
         try:
