@@ -96,7 +96,7 @@ async def list_tabs() -> str:
             check_url(t["url"], _cfg.get())
             lines.append(f"{mark}{t['id']} {t['url']} | {t['title']}")
         except Blocked:
-            lines.append(f"{mark}{t['id']} [{domain_of(t['url'])}: not allowlisted]")
+            lines.append(f"{mark}{t['id']} [not allowlisted: {domain_of(t['url'])}]")
     return untrusted("\n".join(lines) or "[no tabs]", "tab titles")
 
 
@@ -104,7 +104,8 @@ async def list_tabs() -> str:
 async def new_tab(url: str | None = None) -> str:
     """Open a new tab (it becomes active), optionally loading url."""
     if url:
-        _domain.set(check_url(url, _cfg.get()))
+        _domain.set(domain_of(url))
+        check_url(url, _cfg.get())
     tab_id = await browser.new_tab()
     if not url:
         return f"Opened tab {tab_id}."
@@ -142,7 +143,8 @@ def _arrival(final: str, loading: bool) -> str:
 async def navigate(url: str, tab_id: str | None = None) -> str:
     """Load url in a tab and wait for the page to finish loading."""
     tab = await _tab(tab_id)
-    _domain.set(check_url(url, _cfg.get()))
+    _domain.set(domain_of(url))
+    check_url(url, _cfg.get())
     final, loading = await browser.navigate(tab, url)
     return _arrival(final, loading)
 

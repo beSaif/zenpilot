@@ -42,6 +42,27 @@ GET_TEXT_JS = """(max) => {
 SCROLL_INFO_JS = """() => [innerWidth, innerHeight, scrollX, scrollY,
   document.documentElement.scrollWidth, document.documentElement.scrollHeight]"""
 
+# Scroll offsets of the window and everything under the viewport's center.
+SCROLL_STATE_JS = """() => {
+  const out = [scrollX, scrollY];
+  for (let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); el; el = el.parentElement)
+    out.push(el.scrollLeft, el.scrollTop);
+  return out.join(",");
+}"""
+
+# Fallback for when wheel events don't scroll (Zen's window is hidden): scroll the
+# nearest scrollable ancestor of the viewport's center, like the wheel would.
+SCROLL_JS_FALLBACK = """(dx, dy) => {
+  let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  for (; el && el !== document.documentElement; el = el.parentElement) {
+    const s = getComputedStyle(el);
+    const canY = dy && /(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight;
+    const canX = dx && /(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth;
+    if (canY || canX) break;
+  }
+  (el && el !== document.documentElement ? el : document.scrollingElement).scrollBy({left: dx, top: dy, behavior: "instant"});
+}"""
+
 
 class BrowserError(Exception):
     """A failure with a message written for the model."""
@@ -74,6 +95,7 @@ class Browser:
         self._next_tab = 1  # never reset, so old tab ids can't alias new tabs
         self._tab_ids: dict[str, str] = {}  # context -> "t1"
         self._contexts: dict[str, str] = {}  # "t1" -> context
+        self._last_used: str | None = None  # context zenpilot last opened, switched to or navigated
         self.refs = Refs()
 
     # -- connection -------------------------------------------------------
@@ -85,6 +107,7 @@ class Browser:
             # Firefox issues new context ids per session, so old ids and refs are void.
             self._tab_ids.clear()
             self._contexts.clear()
+            self._last_used = None
             self.refs.clear()
             bidi = BiDi(f"ws://127.0.0.1:{port}/session")
             try:
@@ -164,10 +187,16 @@ class Browser:
         states = await asyncio.gather(*(state(t) for t in tabs))
         windows = (await self.call("browser.getClientWindows"))["clientWindows"]
         focused_window = next((w["clientWindow"] for w in windows if w.get("active")), None)
-        for t, (title, visibility, focus) in zip(tabs, states):
-            t["title"] = title or ""
-            t["rank"] = (2 if focus else 0) + (visibility == "visible") + (visibility == "visible" and t["window"] == focused_window)
-        max(tabs, key=lambda t: t["rank"])["active"] = True
+        # Zen has no "selected tab" API. Focus and visibility identify it while the window
+        # is on screen; when it's covered they go stale, so the tab zenpilot last used breaks ties.
+        def rank(t, state):
+            _, visibility, focus = state
+            visible = visibility == "visible"
+            return 4 * focus + 2 * visible + (visible and t["window"] == focused_window) + 2.5 * (t["context"] == self._last_used)
+
+        for t, state in zip(tabs, states):
+            t["title"] = state[0] or ""
+        max(zip(tabs, states), key=lambda ts: rank(*ts))[0]["active"] = True
         return tabs
 
     async def tab(self, tab_id: str | None) -> dict:
@@ -185,11 +214,20 @@ class Browser:
         return (await self.call("browsingContext.getTree", {"root": context, "maxDepth": 0}))["contexts"][0]["url"]
 
     async def new_tab(self) -> str:
-        context = (await self.call("browsingContext.create", {"type": "tab"}))["context"]
+        # A foreground create waits for the tab to become visible, which never happens
+        # while Zen's window is covered. Create in the background, then activate.
+        context = (await self.call("browsingContext.create", {"type": "tab", "background": True}))["context"]
+        await self.activate({"context": context})
         return self._tab_id(context)
 
     async def activate(self, tab: dict) -> None:
-        await self.call("browsingContext.activate", {"context": tab["context"]})
+        self._last_used = tab["context"]
+        try:
+            # Selects the tab at once, but the reply waits on window focus and
+            # visibility changes that a covered window never delivers.
+            await self.call("browsingContext.activate", {"context": tab["context"]}, timeout=2)
+        except BrowserTimeout:
+            pass
 
     async def close_tab(self, tab: dict) -> None:
         await self.call("browsingContext.close", {"context": tab["context"]})
@@ -198,6 +236,7 @@ class Browser:
     async def navigate(self, tab: dict, url: str) -> tuple[str, bool]:
         """Navigate and wait for load. Returns (final url, still_loading)."""
         self.refs.drop_tab(tab["id"])
+        self._last_used = tab["context"]
         try:
             await self.call("browsingContext.navigate", {"context": tab["context"], "url": url, "wait": "complete"})
             loading = False
@@ -350,12 +389,16 @@ class Browser:
         return result
 
     async def scroll(self, tab: dict, direction: str, amount: int) -> str:
-        w, h, *_ = await self.run(tab["context"], SCROLL_INFO_JS)
+        ctx = tab["context"]
+        w, h, *_ = await self.run(ctx, SCROLL_INFO_JS)
         dx, dy = {"down": (0, amount), "up": (0, -amount), "right": (amount, 0), "left": (-amount, 0)}[direction]
-        await self.call("input.performActions", {"context": tab["context"], "actions": [{
+        before = await self.run(ctx, SCROLL_STATE_JS)
+        await self.call("input.performActions", {"context": ctx, "actions": [{
             "type": "wheel", "id": "wheel",
             "actions": [{"type": "scroll", "x": int(w // 2), "y": int(h // 2), "deltaX": dx, "deltaY": dy}],
         }]})
         await asyncio.sleep(0.4)  # let smooth scrolling finish
-        _, h, x, y, sw, sh = await self.run(tab["context"], SCROLL_INFO_JS)
+        if await self.run(ctx, SCROLL_STATE_JS) == before:
+            await self.run(ctx, SCROLL_JS_FALLBACK, dx, dy)
+        _, h, x, y, sw, sh = await self.run(ctx, SCROLL_INFO_JS)
         return f"Scrolled {direction}. Viewport now at y={y:.0f} of {sh:.0f} (height {h:.0f}), x={x:.0f} of {sw:.0f}."
