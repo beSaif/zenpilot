@@ -117,7 +117,8 @@
     if (truncated) return;
     if (node.nodeType === 3) {
       const t = clip(node.data, 100);
-      if (t.length > 1 && !node.parentElement?.matches(INTERACTIVE)) emit(depth, q(t));
+      const parent = node.parentElement;
+      if (t.length > 1 && !parent?.matches(INTERACTIVE) && !parent?.closest("label")?.control) emit(depth, q(t));
       return;
     }
     if (node.nodeType !== 1) return;
@@ -154,6 +155,11 @@
       return;
     }
     // Short containers without interactive content become one text line.
+    if (el.tagName === "LABEL" && el.control) {
+      // Its text is already the control's name; still walk it for nested controls.
+      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth);
+      return;
+    }
     if (!hasInner.has(el) && (el.children.length === 0 || el.innerText.length <= 200)) {
       const t = clip(el.innerText, 100);
       if (t.length > 1) emit(depth, q(t));
@@ -164,4 +170,4 @@
 
   walk(document.body || document.documentElement, 0);
   return [out, truncated];
-};
+}
