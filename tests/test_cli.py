@@ -28,6 +28,16 @@ def test_profile_path(zen_dir):
     assert zen.profile_path("nope") is None
 
 
+def test_describe(zen_dir, monkeypatch):
+    monkeypatch.setattr(zen, "holder", lambda path: None)
+    assert zen.describe("Default (release)") == "never used"
+    profile = zen_dir / "Profiles/abc.zenpilot"
+    (profile / "prefs.js").write_text('user_pref("services.sync.username", "me@example.com");\n')
+    assert zen.describe("zenpilot").startswith("last used ")
+    monkeypatch.setattr(zen, "holder", lambda path: 123)
+    assert zen.describe("zenpilot") == "open now, signed in as me@example.com"
+
+
 def test_ensure_prefs_is_idempotent(zen_dir):
     profile = zen_dir / "Profiles/abc.zenpilot"
     (profile / "user.js").write_text('user_pref("zen.welcome-screen.seen", true);\n')

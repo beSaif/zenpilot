@@ -27,7 +27,7 @@ from .safety import (
     set_config_value,
     untrusted,
 )
-from .zen import DEFAULT_PROFILE, ZenError, launch, port_open, profile_names
+from .zen import DEFAULT_PROFILE, ZenError, describe, launch, port_open, profile_names
 
 INSTRUCTIONS = """\
 zenpilot controls the user's real Zen browser. Typical loop: list_tabs or new_tab, \
@@ -114,15 +114,16 @@ def _start_zen(cfg: Config) -> None:
 
 
 def _choose_profile() -> str:
-    dedicated = f"{DEFAULT_PROFILE} (separate and logged out of everything; recommended)"
+    labels = {f"{DEFAULT_PROFILE} (separate and logged out of everything; recommended)": DEFAULT_PROFILE}
+    labels |= {f"{n} ({describe(n)})": n for n in profile_names() if n != DEFAULT_PROFILE}
     picked = dialogs.choose(
-        "Which Zen profile should Claude use? With your own profile, Claude can use sites you're "
-        "logged into, after you allow each one.",
-        [dedicated, *(n for n in profile_names() if n != DEFAULT_PROFILE)],
+        "Which Zen profile should Claude use? Your everyday one is usually the one open now. "
+        "With it, Claude can use sites you're logged into, after you allow each one.",
+        list(labels),
     )
     if picked is None:
         raise ZenError("No Zen profile was chosen. Ask the user to try again, or to run `zenpilot setup`.")
-    return DEFAULT_PROFILE if picked == dedicated else picked
+    return labels[picked]
 
 
 def _grant(domain: str, cfg: Config) -> bool:

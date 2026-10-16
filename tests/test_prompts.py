@@ -57,11 +57,12 @@ def test_declined_sites_are_not_asked_again(env, answer):
 
 def test_choose_profile(monkeypatch):
     monkeypatch.setattr(server, "profile_names", lambda: ["Default (release)", "zenpilot"])
+    monkeypatch.setattr(server, "describe", lambda name: "open now")
     shown = []
     monkeypatch.setattr(server.dialogs, "choose", lambda msg, items: shown.extend(items) or items[0])
     assert server._choose_profile() == "zenpilot"
-    assert shown[1:] == ["Default (release)"]
-    monkeypatch.setattr(server.dialogs, "choose", lambda msg, items: "Default (release)")
+    assert shown[1:] == ["Default (release) (open now)"]
+    monkeypatch.setattr(server.dialogs, "choose", lambda msg, items: "Default (release) (open now)")
     assert server._choose_profile() == "Default (release)"
     monkeypatch.setattr(server.dialogs, "choose", lambda msg, items: None)
     with pytest.raises(server.ZenError, match="No Zen profile was chosen"):

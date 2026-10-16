@@ -45,6 +45,18 @@ def profile_path(name: str) -> Path | None:
     return _profiles().get(name)
 
 
+def describe(name: str) -> str:
+    """A hint for telling profiles apart, since most are named like 'Default (release)'."""
+    path = profile_path(name)
+    if not path or not (path / "prefs.js").exists():
+        return "never used"
+    used = (path / "prefs.js").stat().st_mtime
+    notes = ["open now" if holder(path) else time.strftime("last used %b %-d, %Y", time.localtime(used))]
+    if account := prefs(path, "prefs.js").get("services.sync.username"):
+        notes.append("signed in as " + account.strip('"'))
+    return ", ".join(notes)
+
+
 def resolve(name: str) -> Path:
     """The profile's folder. Only the dedicated profile is created when missing, so a typo can't make one."""
     if path := profile_path(name):

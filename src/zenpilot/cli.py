@@ -92,9 +92,10 @@ def _pick_profile(current: str | None) -> str:
     names = [zen.DEFAULT_PROFILE, *(n for n in zen.profile_names() if n != zen.DEFAULT_PROFILE)]
     print("Which Zen profile should Claude use?")
     for i, n in enumerate(names, 1):
-        note = " (separate and logged out of everything; recommended)" if n == zen.DEFAULT_PROFILE else ""
-        print(f"  {i}) {n}{note}")
-    print("With your own profile, Claude can use sites you're logged into, after you allow each one.")
+        note = "separate and logged out of everything; recommended" if n == zen.DEFAULT_PROFILE else zen.describe(n)
+        print(f"  {i}) {n} ({note})")
+    print("Your everyday profile is usually the one open now. With it, Claude can use sites")
+    print("you're logged into, after you allow each one.")
     default = names.index(current) + 1 if current in names else 1
     while True:
         answer = input(f"Choose [{default}]: ").strip() or str(default)
