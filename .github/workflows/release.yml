@@ -23,6 +23,15 @@ jobs:
       - run: uv build
       - run: npx -y @anthropic-ai/mcpb@2.1.2 pack mcpb "dist/zenpilot-${GITHUB_REF_NAME#v}.mcpb"
       - run: uv publish dist/*.whl dist/*.tar.gz
+      # The .mcpb installs zenpilot from PyPI, whose CDN can list the old versions for a few
+      # minutes. Publish the release only once installing the bundle would work.
+      - name: Wait for PyPI to list the new version
+        run: |
+          for _ in $(seq 60); do
+            curl -sf https://pypi.org/simple/zenpilot/ | grep -q "zenpilot-${GITHUB_REF_NAME#v}.tar.gz" && exit 0
+            sleep 10
+          done
+          exit 1
       - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
