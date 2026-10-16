@@ -19,11 +19,18 @@ HTTP server or native messaging host.
 
 Requires macOS, Zen in `/Applications`, and [uv](https://docs.astral.sh/uv/).
 
-```sh
-git clone https://github.com/beSaif/zenpilot.git && cd zenpilot
-uv sync
+Install the `zenpilot` command from the latest release:
 
-# A dedicated, logged-out profile for zenpilot (one time)
+```sh
+uv tool install https://github.com/beSaif/zenpilot/releases/download/v0.1.0/zenpilot-0.1.0-py3-none-any.whl
+```
+
+To hack on it, clone it instead: `git clone https://github.com/beSaif/zenpilot.git && cd
+zenpilot && uv sync`, then prefix the commands below with `uv run`.
+
+Create a dedicated, logged-out profile for zenpilot (one time):
+
+```sh
 /Applications/Zen.app/Contents/MacOS/zen -CreateProfile zenpilot
 ```
 
@@ -59,7 +66,7 @@ and clicks and screenshots fail.
 Check the connection:
 
 ```sh
-uv run zenpilot --check   # prints the tab list, * marks the active tab
+zenpilot --check   # prints the tab list, * marks the active tab
 ```
 
 ### Claude Desktop
@@ -70,21 +77,23 @@ In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "zenpilot": {
-      "command": "/absolute/path/to/uv",
-      "args": ["run", "--directory", "/absolute/path/to/zenpilot", "zenpilot"]
+      "command": "/Users/you/.local/bin/zenpilot"
     }
   }
 }
 ```
 
-Use absolute paths, because Claude Desktop doesn't run with your shell's `PATH`. `which uv`
-gives the first one; with Homebrew it is `/opt/homebrew/bin/uv`. Restart Claude Desktop
-afterwards.
+Use the absolute path that `which zenpilot` prints, because Claude Desktop doesn't run with
+your shell's `PATH`. Restart Claude Desktop afterwards.
+
+For a clone, use `"command": "/absolute/path/to/uv"` with
+`"args": ["run", "--directory", "/absolute/path/to/zenpilot", "zenpilot"]`.
 
 ### Claude Code
 
 ```sh
-# from the zenpilot checkout
+claude mcp add --scope user zenpilot -- "$(which zenpilot)"
+# or, from a clone:
 claude mcp add --scope user zenpilot -- "$(which uv)" run --directory "$PWD" zenpilot
 ```
 
