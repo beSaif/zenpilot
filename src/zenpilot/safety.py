@@ -20,6 +20,10 @@ allowlist = ["localhost", "127.0.0.1"]
 # true disables click, type, navigate, new_tab and close_tab.
 read_only = false
 
+# DANGER: true ignores the allowlist and lets zenpilot read and act on any http(s)
+# site, including ones you're logged into. Pages can contain prompt injection.
+dangerously_allow_all_sites = false
+
 # Port Zen was started with (--remote-debugging-port).
 port = 9222
 
@@ -39,6 +43,7 @@ class Blocked(Exception):
 class Config:
     allowlist: list[str]
     read_only: bool
+    allow_all_sites: bool
     port: int
     audit_log: Path
 
@@ -55,6 +60,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     return Config(
         allowlist=[d.strip().lower().removeprefix("*.").strip(".") for d in allowlist if d.strip()],
         read_only=bool(raw.get("read_only", False)),
+        allow_all_sites=raw.get("dangerously_allow_all_sites", False) is True,
         port=int(raw.get("port", defaults["port"])),
         audit_log=Path(raw.get("audit_log", defaults["audit_log"])).expanduser(),
     )
@@ -74,7 +80,7 @@ def check_url(url: str, cfg: Config) -> str:
         return domain
     if urlsplit(url).scheme not in ("http", "https"):
         raise Blocked(f"'{domain}' URLs are not allowed; only http(s) sites on the allowlist.")
-    if any(domain == d or domain.endswith("." + d) for d in cfg.allowlist):
+    if cfg.allow_all_sites or any(domain == d or domain.endswith("." + d) for d in cfg.allowlist):
         return domain
     raise Blocked(
         f"Domain '{domain}' is not on the zenpilot allowlist. "

@@ -8,7 +8,7 @@ from zenpilot.safety import Blocked, Config, audit, check_url, domain_of, load_c
 
 
 def cfg(tmp_path, allowlist=("example.com", "localhost")):
-    return Config(list(allowlist), False, 9222, tmp_path / "audit.jsonl")
+    return Config(list(allowlist), False, False, 9222, tmp_path / "audit.jsonl")
 
 
 @pytest.mark.parametrize("url", [
@@ -33,6 +33,29 @@ def test_blocked_message_names_domain(tmp_path):
         check_url("https://mail.google.com/x", cfg(tmp_path))
 
 
+@pytest.mark.parametrize("url", ["https://anything.example.org/", "http://10.0.0.1/"])
+def test_dangerous_mode_allows_any_http_site(tmp_path, url):
+    c = cfg(tmp_path, allowlist=())
+    c.allow_all_sites = True
+    check_url(url, c)
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "data:text/html,hi", "about:config"])
+def test_dangerous_mode_still_blocks_other_schemes(tmp_path, url):
+    c = cfg(tmp_path, allowlist=())
+    c.allow_all_sites = True
+    with pytest.raises(Blocked):
+        check_url(url, c)
+
+
+def test_dangerous_mode_needs_literal_true(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('dangerously_allow_all_sites = "yes"\n')
+    assert load_config(path).allow_all_sites is False
+    path.write_text("dangerously_allow_all_sites = true\n")
+    assert load_config(path).allow_all_sites is True
+
+
 def test_domain_of():
     assert domain_of("https://Sub.Example.com:443/p?q") == "sub.example.com"
     assert domain_of("about:blank#x") == "about:blank"
@@ -45,6 +68,7 @@ def test_load_config_writes_default(tmp_path):
     assert path.exists()
     assert c.allowlist == ["localhost", "127.0.0.1"]
     assert c.read_only is False and c.port == 9222
+    assert c.allow_all_sites is False
 
 
 def test_load_config_normalizes(tmp_path):

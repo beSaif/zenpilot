@@ -20,10 +20,28 @@ uv sync
 /Applications/Zen.app/Contents/MacOS/zen -CreateProfile zenpilot
 ```
 
-Add the launch alias to `~/.zshrc`:
+**Do this for every profile you'll use with zenpilot.** When Zen starts with remote
+debugging, Firefox's remote agent rewrites about 40 prefs for test automation, and Zen
+writes them into the profile. Among them: Safe Browsing (phishing and malware), password
+saving and autofill, the popup blocker, tracking protection, and crash session restore.
+If Zen doesn't quit cleanly, they stay that way. Turn this off in the profile's
+`user.js`; the folder is shown in `about:profiles`:
 
 ```sh
-alias zenr='pgrep -qf "zen -P zenpilot" && echo "Zen (zenpilot profile) is already running" || open -na /Applications/Zen.app --args -P zenpilot --remote-debugging-port 9222'
+echo 'user_pref("remote.prefs.recommended", false);' >> ~/Library/Application\ Support/zen/Profiles/<id>.zenpilot/user.js
+```
+
+Add the launcher to `~/.zshrc`:
+
+```sh
+# Usage: zenr [profile]   (default profile: zenpilot; quit Zen first when using your main profile)
+zenr() {
+  if lsof -nP -iTCP:9222 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Zen with remote debugging is already running on port 9222"
+    return 0
+  fi
+  open -na /Applications/Zen.app --args -P "${1:-zenpilot}" --remote-debugging-port 9222
+}
 ```
 
 `zenr` starts a second Zen instance on the `zenpilot` profile alongside your normal one.
@@ -108,6 +126,7 @@ apply on the next tool call.
 ```toml
 allowlist = ["localhost", "127.0.0.1"]   # "example.com" also covers its subdomains
 read_only = false                        # true disables click, type, navigate, new_tab, close_tab
+dangerously_allow_all_sites = false      # true ignores the allowlist (see below)
 port = 9222
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 ```
@@ -118,6 +137,11 @@ audit_log = "~/.local/state/zenpilot/audit.jsonl"
   `list_tabs` hides the titles and URLs of other sites. A click can still take a tab to
   another domain, but every call after that is blocked. Only `http(s)` and `about:blank`
   are allowed; `file:`, `data:` and `about:config` are not.
+- **Dangerous mode.** `dangerously_allow_all_sites = true` skips the allowlist for every
+  http(s) site. Non-web schemes stay blocked, and fencing, read-only mode and the audit
+  log still apply. Only the literal `true` turns it on. With a logged-in profile, this
+  means a prompt injection on any page you visit can steer Claude inside your accounts.
+  Prefer adding sites to the allowlist, or use it together with `read_only = true`.
 - **Untrusted content.** Text from pages (`read_page`, `get_text`, tab titles) is wrapped
   in `<untrusted_web_content>`, followed by a note that it is data, not instructions.
   Fake closing tags inside the content are neutralized. Screenshots carry the same note.
@@ -141,7 +165,8 @@ audit_log = "~/.local/state/zenpilot/audit.jsonl"
   ends the session on exit (stdin close, SIGTERM, SIGINT, SIGHUP). A `kill -9` can't be
   handled, though, and after one Zen refuses new sessions until you restart it.
 - **Covered window.** zenpilot works while Zen's window is hidden or covered. Firefox
-  doesn't answer `activate` in that state, so zenpilot uses a short timeout. If wheel
+  doesn't answer `activate` in that state, or when Zen isn't the frontmost app, so
+  zenpilot gives up waiting after 1s and `new_tab` can take about a second. If wheel
   scrolling doesn't move the page, it falls back to `scrollBy`.
 - **Which tab is active.** BiDi has no "selected tab" API. zenpilot ranks tabs by
   `document.hasFocus()` and visibility, and uses the tab it last opened, switched to or
@@ -163,7 +188,22 @@ use a temporary config, so your allowlist and audit log aren't touched.
 
 ## Using your main profile
 
-Use the dedicated profile until you trust the setup. To switch later, change `-P
-zenpilot` in the alias to your profile's name (see `about:profiles`). Firefox only
-enables the remote agent when Zen starts with the flag, so you'll need to quit and
-relaunch Zen with `zenr`.
+zenpilot works with any profile; the profile is only chosen when you launch Zen.
+
+1. Add the `remote.prefs.recommended` line to that profile's `user.js` (see Setup).
+   Skip this and Zen can keep Safe Browsing and password saving off afterwards.
+2. Quit Zen (Cmd+Q). The remote agent only starts with the flag, and a profile can't
+   be open twice.
+3. Run `zenr "Default (release)"`, using the name from `about:profiles`.
+
+While Zen runs this way:
+
+- **Port access.** Any local process running as you can open a BiDi session on port
+  9222 whenever zenpilot isn't holding it. BiDi can read cookies and run script in your
+  logged-in sites, even though zenpilot exposes no such tools. Only run it like this
+  while you need it, and quit and relaunch Zen normally afterwards.
+- **Automation visible to sites.** `navigator.webdriver` is `true` and Zen shows its
+  remote-control indicator. Some sites (banks, Cloudflare challenges) treat that as a
+  bot.
+- **One debug instance.** Only one Zen instance can have remote debugging on port 9222
+  at a time.

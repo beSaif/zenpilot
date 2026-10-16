@@ -254,7 +254,7 @@ class Browser:
         try:
             # Selects the tab at once, but the reply waits on window focus and
             # visibility changes that a covered window never delivers.
-            await self.call("browsingContext.activate", {"context": tab["context"]}, timeout=2)
+            await self.call("browsingContext.activate", {"context": tab["context"]}, timeout=1)
         except BrowserTimeout:
             pass
 
