@@ -11,18 +11,34 @@ def cfg(tmp_path, allowlist=("example.com", "localhost")):
     return Config(list(allowlist), False, False, 9222, tmp_path / "audit.jsonl")
 
 
-@pytest.mark.parametrize("url", [
-    "https://example.com/a", "https://www.example.com", "http://deep.sub.example.com:8080/",
-    "http://localhost:5000/x", "about:blank", "about:srcdoc",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/a",
+        "https://www.example.com",
+        "http://deep.sub.example.com:8080/",
+        "http://localhost:5000/x",
+        "about:blank",
+        "about:srcdoc",
+    ],
+)
 def test_allowed(tmp_path, url):
     check_url(url, cfg(tmp_path))
 
 
-@pytest.mark.parametrize("url", [
-    "https://evil.com", "https://example.com.evil.com", "https://notexample.com",
-    "file:///etc/passwd", "data:text/html,hi", "javascript:alert(1)", "about:config", "chrome://browser",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.com",
+        "https://example.com.evil.com",
+        "https://notexample.com",
+        "file:///etc/passwd",
+        "data:text/html,hi",
+        "javascript:alert(1)",
+        "about:config",
+        "chrome://browser",
+    ],
+)
 def test_blocked(tmp_path, url):
     with pytest.raises(Blocked):
         check_url(url, cfg(tmp_path))

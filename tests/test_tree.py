@@ -5,15 +5,18 @@ from zenpilot.tree import Item, Ref, Refs, render, unwrap
 
 
 def test_unwrap_values():
-    v = {"type": "array", "value": [
-        {"type": "number", "value": 2},
-        {"type": "string", "value": "x"},
-        {"type": "null"},
-        {"type": "node", "sharedId": "abc", "value": {"nodeType": 1}},
-        {"type": "window", "value": {"context": "ctx-1"}},
-        {"type": "object", "value": [["k", {"type": "boolean", "value": True}]]},
-        {"type": "number", "value": "NaN"},
-    ]}
+    v = {
+        "type": "array",
+        "value": [
+            {"type": "number", "value": 2},
+            {"type": "string", "value": "x"},
+            {"type": "null"},
+            {"type": "node", "sharedId": "abc", "value": {"nodeType": 1}},
+            {"type": "window", "value": {"context": "ctx-1"}},
+            {"type": "object", "value": [["k", {"type": "boolean", "value": True}]]},
+            {"type": "number", "value": "NaN"},
+        ],
+    }
     assert unwrap(v) == [2, "x", None, {"sharedId": "abc"}, {"context": "ctx-1"}, {"k": True}, None]
 
 

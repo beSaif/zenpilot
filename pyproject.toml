@@ -3,14 +3,29 @@ name = "zenpilot"
 version = "0.1.0"
 description = "MCP server that lets Claude drive a running Zen Browser over WebDriver BiDi"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["mcp", "claude", "zen-browser", "firefox", "webdriver-bidi", "browser-automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 authors = [
     { name = "beSaif", email = "hishamkolikara@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.20",
-    "websockets>=17.2",
+    "mcp>=2.3,<3",
+    "websockets>=15,<18",
 ]
+
+[project.urls]
+Homepage = "https://github.com/beSaif/zenpilot"
+Issues = "https://github.com/beSaif/zenpilot/issues"
 
 [project.scripts]
 zenpilot = "zenpilot:main"
@@ -23,7 +38,14 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.14",
 ]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -186,8 +186,9 @@ async def type(ref: str, text: str, submit: bool = False) -> str:
 
 
 @tool()
-async def scroll(direction: Literal["up", "down", "left", "right"] = "down", amount: int = 600,
-                 tab_id: str | None = None) -> str:
+async def scroll(
+    direction: Literal["up", "down", "left", "right"] = "down", amount: int = 600, tab_id: str | None = None
+) -> str:
     """Scroll the page with the mouse wheel by amount pixels."""
     tab = await _tab(tab_id)
     return await browser.scroll(tab, direction, max(1, min(amount, 10_000)))

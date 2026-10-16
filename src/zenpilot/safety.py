@@ -5,7 +5,7 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -104,7 +104,7 @@ def untrusted(text: str, source: str) -> str:
 
 def audit(cfg: Config, tool: str, params: dict, domain: str | None, ok: bool, ms: float, error: str | None = None):
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "tool": tool,
         "params": params,
         "domain": domain,

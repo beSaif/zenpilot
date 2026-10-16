@@ -140,12 +140,20 @@ async def test_read_page_outline(site, config):
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
         page = await s.ok("read_page")
         # Prompt injection text stays inside the untrusted fence.
-        fence = page[page.index("<untrusted_web_content"):page.index("</untrusted_web_content>")]
+        fence = page[page.index("<untrusted_web_content") : page.index("</untrusted_web_content>")]
         assert "Ignore previous instructions" in fence
-        for role, name in [("link", "Second page"), ("textbox", "Name"), ("textbox", "Email"),
-                           ("select", "Color"), ("checkbox", "I agree"), ("button", "Sign up"),
-                           ("textbox", "Shadow input"), ("button", "Shadow button"),
-                           ("button", "Frame button"), ("button", "Bottom button")]:
+        for role, name in [
+            ("link", "Second page"),
+            ("textbox", "Name"),
+            ("textbox", "Email"),
+            ("select", "Color"),
+            ("checkbox", "I agree"),
+            ("button", "Sign up"),
+            ("textbox", "Shadow input"),
+            ("button", "Shadow button"),
+            ("button", "Frame button"),
+            ("button", "Bottom button"),
+        ]:
             ref(page, role, name)
         assert 'textbox "Password" type=password value="•••"' in page
         assert "secret" not in page
@@ -179,7 +187,7 @@ async def test_cross_origin_frame_when_allowlisted(site, config):
     config(allowlist=("localhost", "127.0.0.1"))
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
         page = await s.ok("read_page")
-        cross = page[page.index('frame "Cross-origin frame"'):]
+        cross = page[page.index('frame "Cross-origin frame"') :]
         await s.ok("click", ref=ref(cross, "button", "Frame button"))
         assert 'button "frame clicked:true:127.0.0.1"' in await s.ok("read_page")
 
@@ -216,7 +224,8 @@ async def test_navigation_and_new_tab_reporting(site, config):
 
 async def test_scroll(site, config):
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
-        assert re.search(r"y=([1-9]\d*)", await s.ok("scroll", direction="down", amount=800))
+        # Smooth scrolling must have settled before the position is reported.
+        assert "y=1500 " in await s.ok("scroll", direction="down", amount=1500)
         assert "y=0 " in await s.ok("scroll", direction="up", amount=5000)
 
 

@@ -1,5 +1,8 @@
 # zenpilot
 
+[![CI](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An MCP server that lets Claude Desktop and Claude Code drive a running
 [Zen Browser](https://zen-browser.app) the way Claude in Chrome drives Chrome.
 
@@ -8,12 +11,16 @@ It is one Python process speaking MCP over stdio. It talks to Zen over
 exposes when started with `--remote-debugging-port`. There is no browser extension,
 HTTP server or native messaging host.
 
+> **Status: alpha.** Tested on macOS with Zen 1.23.2b (Firefox 157). The Python code is
+> platform-neutral, but the setup below is macOS-specific. Plain Firefox should work the
+> same way, but it isn't tested yet.
+
 ## Setup
 
 Requires macOS, Zen in `/Applications`, and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone <this repo> ~/Work/zenpilot && cd ~/Work/zenpilot
+git clone https://github.com/beSaif/zenpilot.git && cd zenpilot
 uv sync
 
 # A dedicated, logged-out profile for zenpilot (one time)
@@ -25,10 +32,11 @@ debugging, Firefox's remote agent rewrites about 40 prefs for test automation, a
 writes them into the profile. Among them: Safe Browsing (phishing and malware), password
 saving and autofill, the popup blocker, tracking protection, and crash session restore.
 If Zen doesn't quit cleanly, they stay that way. Turn this off in the profile's
-`user.js`; the folder is shown in `about:profiles`:
+`user.js`. The profile folder is also shown in `about:profiles`:
 
 ```sh
-echo 'user_pref("remote.prefs.recommended", false);' >> ~/Library/Application\ Support/zen/Profiles/<id>.zenpilot/user.js
+PROFILE=$(ls -d ~/Library/Application\ Support/zen/Profiles/*.zenpilot)
+echo 'user_pref("remote.prefs.recommended", false);' >> "$PROFILE/user.js"
 ```
 
 Add the launcher to `~/.zshrc`:
@@ -62,20 +70,22 @@ In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "zenpilot": {
-      "command": "/opt/homebrew/bin/uv",
-      "args": ["run", "--directory", "/Users/you/Work/zenpilot", "zenpilot"]
+      "command": "/absolute/path/to/uv",
+      "args": ["run", "--directory", "/absolute/path/to/zenpilot", "zenpilot"]
     }
   }
 }
 ```
 
-Use absolute paths, because Claude Desktop doesn't run with your shell's `PATH`. Restart
-Claude Desktop afterwards.
+Use absolute paths, because Claude Desktop doesn't run with your shell's `PATH`. `which uv`
+gives the first one; with Homebrew it is `/opt/homebrew/bin/uv`. Restart Claude Desktop
+afterwards.
 
 ### Claude Code
 
 ```sh
-claude mcp add --scope user zenpilot -- /opt/homebrew/bin/uv run --directory ~/Work/zenpilot zenpilot
+# from the zenpilot checkout
+claude mcp add --scope user zenpilot -- "$(which uv)" run --directory "$PWD" zenpilot
 ```
 
 ## Tools
@@ -179,7 +189,10 @@ audit_log = "~/.local/state/zenpilot/audit.jsonl"
 ```sh
 uv run pytest -m "not integration"   # unit tests: BiDi client (fake socket), ref tree, safety
 uv run pytest                        # with Zen started via zenr: adds integration tests
+uv run ruff check src tests && uv run ruff format src tests
 ```
+
+CI runs the lint checks and unit tests on Python 3.12 and 3.13.
 
 The integration tests start the real `zenpilot` over MCP stdio and serve
 `tests/fixture/` on localhost. The fixture has a form, buttons, a shadow-DOM widget,
@@ -207,3 +220,7 @@ While Zen runs this way:
   bot.
 - **One debug instance.** Only one Zen instance can have remote debugging on port 9222
   at a time.
+
+## License
+
+[MIT](LICENSE)

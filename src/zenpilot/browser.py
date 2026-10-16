@@ -26,8 +26,9 @@ PREPARE_JS = """(el) => {
   if (r.width === 0 || r.height === 0) return ["hidden", el.tagName, ""];
   const top = el.getRootNode().elementFromPoint?.(r.left + r.width / 2, r.top + r.height / 2);
   const ok = !top || el === top || el.contains(top) || top.contains(el) || top.control === el;
+  const classes = typeof top?.className === "string" ? top.className.trim().split(/\\s+/).filter(Boolean) : [];
   const cover = ok ? "" : top.tagName.toLowerCase() + (top.id ? "#" + top.id : "") +
-    (typeof top.className === "string" && top.className.trim() ? "." + top.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+    (classes.length ? "." + classes.slice(0, 2).join(".") : "");
   return ["ok", el.tagName, cover];
 }"""
 
@@ -42,6 +43,8 @@ GET_TEXT_JS = """(max) => {
   const text = (root?.innerText || "").replace(/[ \\t]+\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
   return [document.title, text.length, text.slice(0, max)];
 }"""
+
+TAB_STATE_JS = "() => [document.title, document.visibilityState, document.hasFocus()]"
 
 SCROLL_INFO_JS = """() => [innerWidth, innerHeight, scrollX, scrollY,
   document.documentElement.scrollWidth, document.documentElement.scrollHeight]"""
@@ -64,7 +67,8 @@ SCROLL_JS_FALLBACK = """(dx, dy) => {
     const canX = dx && /(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth;
     if (canY || canX) break;
   }
-  (el && el !== document.documentElement ? el : document.scrollingElement).scrollBy({left: dx, top: dy, behavior: "instant"});
+  const target = el && el !== document.documentElement ? el : document.scrollingElement;
+  target.scrollBy({left: dx, top: dy, behavior: "instant"});
 }"""
 
 
@@ -132,9 +136,16 @@ class Browser:
                     ) from None
                 raise
             try:
-                await bidi.send("session.subscribe", {"events": [
-                    "browsingContext.navigationStarted", "browsingContext.load", "browsingContext.contextCreated",
-                ]})
+                await bidi.send(
+                    "session.subscribe",
+                    {
+                        "events": [
+                            "browsingContext.navigationStarted",
+                            "browsingContext.load",
+                            "browsingContext.contextCreated",
+                        ]
+                    },
+                )
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
@@ -167,20 +178,26 @@ class Browser:
         try:
             return await self._bidi.send(method, params, timeout)
         except ConnectionError:
-            raise BrowserError("Lost the connection to Zen. Retry; if it persists, check that Zen is running.") from None
+            raise BrowserError(
+                "Lost the connection to Zen. Retry; if it persists, check that Zen is running."
+            ) from None
         except TimeoutError:
             raise BrowserTimeout(f"Zen did not answer {method} within {timeout:g}s.") from None
 
     async def run(self, context: str, fn: str, *args, timeout: float = 15):
         """Call a JS function in a browsing context and return its unwrapped result."""
-        r = await self.call("script.callFunction", {
-            "functionDeclaration": fn,
-            "target": {"context": context},
-            "arguments": [_arg(a) for a in args],
-            "awaitPromise": True,
-            "resultOwnership": "none",
-            "serializationOptions": {"maxDomDepth": 0},
-        }, timeout)
+        r = await self.call(
+            "script.callFunction",
+            {
+                "functionDeclaration": fn,
+                "target": {"context": context},
+                "arguments": [_arg(a) for a in args],
+                "awaitPromise": True,
+                "resultOwnership": "none",
+                "serializationOptions": {"maxDomDepth": 0},
+            },
+            timeout,
+        )
         if r["type"] == "exception":
             raise BrowserError(f"Script error in page: {r['exceptionDetails'].get('text', '')}")
         return unwrap(r["result"])
@@ -198,8 +215,17 @@ class Browser:
     async def tabs(self, probe: bool = True) -> list[dict]:
         """Top-level tabs. With probe, also fetch titles and work out the active tab."""
         contexts = (await self.call("browsingContext.getTree", {"maxDepth": 0}))["contexts"]
-        tabs = [{"id": self._tab_id(c["context"]), "context": c["context"], "url": c["url"],
-                 "window": c.get("clientWindow"), "title": "", "active": False} for c in contexts]
+        tabs = [
+            {
+                "id": self._tab_id(c["context"]),
+                "context": c["context"],
+                "url": c["url"],
+                "window": c.get("clientWindow"),
+                "title": "",
+                "active": False,
+            }
+            for c in contexts
+        ]
         live = {t["context"] for t in tabs}
         for ctx in [c for c in self._tab_ids if c not in live]:
             self.refs.drop_tab(self._tab_ids[ctx])
@@ -209,23 +235,25 @@ class Browser:
 
         async def state(tab):
             try:
-                return await self.run(tab["context"], "() => [document.title, document.visibilityState, document.hasFocus()]", timeout=3)
+                return await self.run(tab["context"], TAB_STATE_JS, timeout=3)
             except (BrowserError, BiDiError):
                 return ["", "hidden", False]
 
         states = await asyncio.gather(*(state(t) for t in tabs))
         windows = (await self.call("browser.getClientWindows"))["clientWindows"]
         focused_window = next((w["clientWindow"] for w in windows if w.get("active")), None)
+
         # Zen has no "selected tab" API. Focus and visibility identify it while the window
         # is on screen; when it's covered they go stale, so the tab zenpilot last used breaks ties.
         def rank(t, state):
             _, visibility, focus = state
             visible = visibility == "visible"
-            return 4 * focus + 2 * visible + (visible and t["window"] == focused_window) + 2.5 * (t["context"] == self._last_used)
+            in_focused_window = visible and t["window"] == focused_window
+            return 4 * focus + 2 * visible + in_focused_window + 2.5 * (t["context"] == self._last_used)
 
-        for t, state in zip(tabs, states):
+        for t, state in zip(tabs, states, strict=True):
             t["title"] = state[0] or ""
-        max(zip(tabs, states), key=lambda ts: rank(*ts))[0]["active"] = True
+        max(zip(tabs, states, strict=True), key=lambda ts: rank(*ts))[0]["active"] = True
         return tabs
 
     async def tab(self, tab_id: str | None) -> dict:
@@ -311,9 +339,13 @@ class Browser:
         return title, text or "[no text]"
 
     async def screenshot(self, tab: dict) -> bytes:
-        r = await self.call("browsingContext.captureScreenshot", {
-            "context": tab["context"], "format": {"type": "image/jpeg", "quality": 0.8},
-        })
+        r = await self.call(
+            "browsingContext.captureScreenshot",
+            {
+                "context": tab["context"],
+                "format": {"type": "image/jpeg", "quality": 0.8},
+            },
+        )
         return base64.b64decode(r["data"])
 
     # -- input ----------------------------------------------------------------
@@ -355,15 +387,26 @@ class Browser:
         await self.call("input.performActions", {"context": ref.context, "actions": actions})
 
     async def _click(self, ref: Ref) -> None:
-        await self._actions(ref, [{"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": [
-            {"type": "pointerMove", "x": 0, "y": 0, "origin": {"type": "element", "element": {"sharedId": ref.shared_id}}},
-            {"type": "pointerDown", "button": 0},
-            {"type": "pointerUp", "button": 0},
-        ]}])
+        origin = {"type": "element", "element": {"sharedId": ref.shared_id}}
+        await self._actions(
+            ref,
+            [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [
+                        {"type": "pointerMove", "x": 0, "y": 0, "origin": origin},
+                        {"type": "pointerDown", "button": 0},
+                        {"type": "pointerUp", "button": 0},
+                    ],
+                }
+            ],
+        )
 
     async def _keys(self, ref: Ref, keys: list[str]) -> None:
         for i in range(0, len(keys), 100):
-            chunk = [a for k in keys[i:i + 100] for a in ({"type": "keyDown", "value": k}, {"type": "keyUp", "value": k})]
+            chunk = [{"type": t, "value": k} for k in keys[i : i + 100] for t in ("keyDown", "keyUp")]
             await self._actions(ref, [{"type": "key", "id": "keyboard", "actions": chunk}])
 
     async def _settle(self, ref: Ref, action) -> str:
@@ -422,12 +465,29 @@ class Browser:
         w, h, *_ = await self.run(ctx, SCROLL_INFO_JS)
         dx, dy = {"down": (0, amount), "up": (0, -amount), "right": (amount, 0), "left": (-amount, 0)}[direction]
         before = await self.run(ctx, SCROLL_STATE_JS)
-        await self.call("input.performActions", {"context": ctx, "actions": [{
-            "type": "wheel", "id": "wheel",
-            "actions": [{"type": "scroll", "x": int(w // 2), "y": int(h // 2), "deltaX": dx, "deltaY": dy}],
-        }]})
-        await asyncio.sleep(0.4)  # let smooth scrolling finish
-        if await self.run(ctx, SCROLL_STATE_JS) == before:
+        await self.call(
+            "input.performActions",
+            {
+                "context": ctx,
+                "actions": [
+                    {
+                        "type": "wheel",
+                        "id": "wheel",
+                        "actions": [{"type": "scroll", "x": int(w // 2), "y": int(h // 2), "deltaX": dx, "deltaY": dy}],
+                    }
+                ],
+            },
+        )
+        # Smooth scrolling takes a while: wait until the position settles (up to 2s),
+        # or give up after 0.4s if nothing moved at all.
+        state = before
+        for i in range(20):
+            await asyncio.sleep(0.1)
+            now = await self.run(ctx, SCROLL_STATE_JS)
+            if now == state and (now != before or i >= 3):
+                break
+            state = now
+        if state == before:
             await self.run(ctx, SCROLL_JS_FALLBACK, dx, dy)
         _, h, x, y, sw, sh = await self.run(ctx, SCROLL_INFO_JS)
         return f"Scrolled {direction}. Viewport now at y={y:.0f} of {sh:.0f} (height {h:.0f}), x={x:.0f} of {sw:.0f}."
