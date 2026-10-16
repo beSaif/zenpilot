@@ -1,4 +1,9 @@
-# zenpilot
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/logo-wordmark-dark.svg">
+    <img alt="zenpilot" src="https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/logo-wordmark.svg" height="56">
+  </picture>
+</h1>
 
 [![CI](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
