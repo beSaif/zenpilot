@@ -57,6 +57,7 @@ def test_resolve_creates_the_dedicated_profile(zen_dir, monkeypatch):
 def fake_launch(zen_dir, monkeypatch):
     """launch() with the port, the profile lock, quitting and `open` faked."""
     calls = []
+    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)  # exists, like an installed Zen.app
     monkeypatch.setattr(zen, "port_open", lambda port: bool(calls and calls[-1][0] == "open"))
     monkeypatch.setattr(zen, "holder", lambda path: 123)
     monkeypatch.setattr(zen, "quit_zen", lambda pid, path: calls.append(("quit", pid)))
