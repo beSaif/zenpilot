@@ -1,0 +1,28 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching pyproject.toml) to publish to PyPI and create a
+# GitHub release with the wheel, sdist and Claude Desktop extension.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write # GitHub release
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Check the tag matches the version
+        run: test "$GITHUB_REF_NAME" = "v$(uv version --short)"
+      - run: uv sync --locked
+      - run: uv run pytest -m "not integration"
+      - run: uv build
+      - run: npx -y @anthropic-ai/mcpb@2.1.2 pack mcpb "dist/zenpilot-${GITHUB_REF_NAME#v}.mcpb"
+      - run: uv publish dist/*.whl dist/*.tar.gz
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 dist/
 .DS_Store
+mcpb/uv.lock

@@ -1,6 +1,6 @@
 """End to end against a live Zen: MCP stdio client -> zenpilot -> BiDi -> fixture page.
 
-Needs Zen running with --remote-debugging-port 9222 (the `zenr` alias); skipped otherwise.
+Needs Zen running with --remote-debugging-port 9222 (`zenpilot launch`); skipped otherwise.
 Uses its own temp config, so your allowlist and audit log are untouched.
 """
 
@@ -30,7 +30,7 @@ def _zen_running() -> bool:
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not _zen_running(), reason="Zen is not listening on 127.0.0.1:9222 (run zenr)"),
+    pytest.mark.skipif(not _zen_running(), reason="Zen is not listening on 127.0.0.1:9222 (run `zenpilot launch`)"),
 ]
 
 
@@ -55,6 +55,7 @@ def config(tmp_path):
         path.write_text(
             f"allowlist = {json.dumps(list(allowlist))}\n"
             f"read_only = {'true' if read_only else 'false'}\n"
+            "prompts = false\n"
             f'audit_log = "{tmp_path / "audit.jsonl"}"\n'
         )
 

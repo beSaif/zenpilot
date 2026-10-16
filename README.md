@@ -17,85 +17,69 @@ HTTP server or native messaging host.
 
 ## Setup
 
-Requires macOS, Zen in `/Applications`, and [uv](https://docs.astral.sh/uv/).
+Requires macOS and Zen in `/Applications`.
 
-Install the `zenpilot` command from the latest release:
+**Claude Desktop:** download `zenpilot-<version>.mcpb` from the
+[latest release](https://github.com/beSaif/zenpilot/releases/latest) and open it.
+Claude Desktop installs it as an extension and provides Python itself. That's all; the
+rest happens in dialogs the first time Claude uses it (below).
 
-```sh
-uv tool install https://github.com/beSaif/zenpilot/releases/download/v0.1.0/zenpilot-0.1.0-py3-none-any.whl
-```
-
-To hack on it, clone it instead: `git clone https://github.com/beSaif/zenpilot.git && cd
-zenpilot && uv sync`, then prefix the commands below with `uv run`.
-
-Create a dedicated, logged-out profile for zenpilot (one time):
+**Claude Code, or both:** install with [uv](https://docs.astral.sh/uv/) and run the setup
+wizard, which asks which profile to use and which sites to allow:
 
 ```sh
-/Applications/Zen.app/Contents/MacOS/zen -CreateProfile zenpilot
+uv tool install zenpilot
+zenpilot setup
 ```
 
-**Do this for every profile you'll use with zenpilot.** When Zen starts with remote
-debugging, Firefox's remote agent rewrites about 40 prefs for test automation, and Zen
-writes them into the profile. Among them: Safe Browsing (phishing and malware), password
-saving and autofill, the popup blocker, tracking protection, and crash session restore.
-If Zen doesn't quit cleanly, they stay that way. Turn this off in the profile's
-`user.js`. The profile folder is also shown in `about:profiles`:
+It writes zenpilot's prefs to the profile's `user.js`, registers zenpilot with Claude
+Code (user scope) and Claude Desktop if they're installed (restart Claude Desktop
+afterwards), then starts Zen and prints its tabs.
 
-```sh
-PROFILE=$(ls -d ~/Library/Application\ Support/zen/Profiles/*.zenpilot)
-echo 'user_pref("remote.prefs.recommended", false);' >> "$PROFILE/user.js"
-```
+### First use
 
-Add the launcher to `~/.zshrc`:
+Nothing needs starting by hand. When Claude calls a tool:
 
-```sh
-# Usage: zenr [profile]   (default profile: zenpilot; quit Zen first when using your main profile)
-zenr() {
-  if lsof -nP -iTCP:9222 -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "Zen with remote debugging is already running on port 9222"
-    return 0
-  fi
-  open -na /Applications/Zen.app --args -P "${1:-zenpilot}" --remote-debugging-port 9222
-}
-```
+- **No profile chosen yet** (the Desktop extension): a dialog asks which Zen profile
+  Claude should use. `zenpilot` is a separate profile, logged out of everything, that
+  zenpilot creates; your own profile lets Claude use sites you're logged into.
+- **Zen isn't running:** zenpilot starts it on that profile with remote debugging. The
+  `zenpilot` profile runs as a second instance alongside your normal Zen.
+- **The profile is already open without remote debugging** (the usual case for your own
+  profile): a dialog asks to quit and reopen Zen. Zen restores your tabs, but lazily,
+  so Claude only sees a restored tab once it has been opened.
+- **A site isn't allowlisted:** a dialog asks *Don't Allow*, *Allow This Session* or
+  *Always Allow*. *Always* saves it to the allowlist. A declined site isn't asked about
+  again until the server restarts.
 
-`zenr` starts a second Zen instance on the `zenpilot` profile alongside your normal one.
-The first time, dismiss Zen's welcome screen. Until you do, pages have a 0×0 viewport
-and clicks and screenshots fail.
+The dialogs are native macOS dialogs, so they work in every client and only the person
+at the Mac can answer them; the model never sees them. They default to the safe answer,
+so a stray Enter declines. Set `prompts = false` in the config to turn them all off.
 
-Check the connection:
+Before Zen starts with remote debugging, zenpilot always sets
+`remote.prefs.recommended = false` in the profile's `user.js`. Without it, Firefox's
+remote agent rewrites about 40 prefs for test automation and Zen writes them into the
+profile: Safe Browsing (phishing and malware), password saving and autofill, the popup
+blocker, tracking protection, and crash session restore. If Zen doesn't quit cleanly,
+they stay that way. zenpilot also only ever creates the `zenpilot` profile, so a
+mistyped profile name fails with the list of real ones instead of making a new profile.
 
-```sh
-zenpilot --check   # prints the tab list, * marks the active tab
-```
+### Commands
 
-### Claude Desktop
+| Command | What it does |
+|---|---|
+| `zenpilot` | The MCP server. Claude runs this; you don't. |
+| `zenpilot setup [--profile NAME]` | The wizard above; `--profile` skips the questions. `--no-register` and `--no-launch` skip registering and starting Zen. |
+| `zenpilot allow [DOMAIN...]` | Add sites to the allowlist; `--remove` takes them off; no arguments prints it |
+| `zenpilot launch [PROFILE]` | Start Zen with remote debugging, offering to reopen it if it's open without |
+| `zenpilot doctor` | Check each part of the setup and print a fix for anything wrong |
 
-In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Without installing, `uvx zenpilot setup` works too and registers `uvx zenpilot` as the
+server command; then run the other commands as `uvx zenpilot ...`.
 
-```json
-{
-  "mcpServers": {
-    "zenpilot": {
-      "command": "/Users/you/.local/bin/zenpilot"
-    }
-  }
-}
-```
-
-Use the absolute path that `which zenpilot` prints, because Claude Desktop doesn't run with
-your shell's `PATH`. Restart Claude Desktop afterwards.
-
-For a clone, use `"command": "/absolute/path/to/uv"` with
-`"args": ["run", "--directory", "/absolute/path/to/zenpilot", "zenpilot"]`.
-
-### Claude Code
-
-```sh
-claude mcp add --scope user zenpilot -- "$(which zenpilot)"
-# or, from a clone:
-claude mcp add --scope user zenpilot -- "$(which uv)" run --directory "$PWD" zenpilot
-```
+To hack on it: `git clone https://github.com/beSaif/zenpilot.git && cd zenpilot && uv sync
+&& uv run zenpilot setup`. That registers the clone's `.venv/bin/zenpilot`, so edits take
+effect the next time Claude starts the server.
 
 ## Tools
 
@@ -140,19 +124,23 @@ interactive elements.
 ## Safety
 
 Config lives in `~/.config/zenpilot/config.toml` and is created on first run. Changes
-apply on the next tool call.
+apply on the next tool call. `zenpilot allow github.com` edits the allowlist for you.
 
 ```toml
 allowlist = ["localhost", "127.0.0.1"]   # "example.com" also covers its subdomains
 read_only = false                        # true disables click, type, navigate, new_tab, close_tab
 dangerously_allow_all_sites = false      # true ignores the allowlist (see below)
+profile = "zenpilot"                     # Zen profile to drive; asked on first use if unset
 port = 9222
+auto_launch = true                       # start Zen on that profile when a tool needs it
+prompts = true                           # ask in macOS dialogs (see First use)
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 ```
 
 - **Allowlist.** Every tool that touches a page checks the tab's current domain. That
   covers reading, screenshots, clicking and typing. `navigate` also checks both the
-  current domain and the target. Blocked calls return an error naming the domain.
+  current domain and the target. Blocked calls return an error naming the domain and
+  the `zenpilot allow` command, so Claude can ask you to run it.
   `list_tabs` hides the titles and URLs of other sites. A click can still take a tab to
   another domain, but every call after that is blocked. Only `http(s)` and `about:blank`
   are allowed; `file:`, `data:` and `about:config` are not.
@@ -196,12 +184,15 @@ audit_log = "~/.local/state/zenpilot/audit.jsonl"
 ## Tests
 
 ```sh
-uv run pytest -m "not integration"   # unit tests: BiDi client (fake socket), ref tree, safety
-uv run pytest                        # with Zen started via zenr: adds integration tests
+uv run pytest -m "not integration"   # unit tests: BiDi client (fake socket), ref tree, safety, CLI, prompts
+uv run pytest                        # with Zen running (zenpilot launch): adds integration tests
 uv run ruff check src tests && uv run ruff format src tests
 ```
 
-CI runs the lint checks and unit tests on Python 3.12 and 3.13.
+CI runs the lint checks and unit tests on Python 3.12 and 3.13. Pushing a `v*` tag that
+matches `pyproject.toml` runs `release.yml`: it publishes to PyPI (trusted publishing,
+environment `pypi`) and creates a GitHub release with the wheel, sdist and `.mcpb`. The
+extension's files are in `mcpb/`; a unit test keeps their version and tool list in sync.
 
 The integration tests start the real `zenpilot` over MCP stdio and serve
 `tests/fixture/` on localhost. The fixture has a form, buttons, a shadow-DOM widget,
@@ -210,13 +201,13 @@ use a temporary config, so your allowlist and audit log aren't touched.
 
 ## Using your main profile
 
-zenpilot works with any profile; the profile is only chosen when you launch Zen.
+zenpilot works with any profile; the profile is only chosen when Zen starts. Pick yours
+in the first-use dialog or in `zenpilot setup` (or set `profile` in the config, using
+the name from `about:profiles`). Then, whenever Zen is open normally, Claude's next tool
+call offers to reopen it with remote debugging.
 
-1. Add the `remote.prefs.recommended` line to that profile's `user.js` (see Setup).
-   Skip this and Zen can keep Safe Browsing and password saving off afterwards.
-2. Quit Zen (Cmd+Q). The remote agent only starts with the flag, and a profile can't
-   be open twice.
-3. Run `zenr "Default (release)"`, using the name from `about:profiles`.
+Consider `auto_launch = false`, so that Claude can't start or reopen your logged-in
+browser with the debugging port open. Start it with `zenpilot launch` when you want it.
 
 While Zen runs this way:
 

@@ -24,8 +24,19 @@ read_only = false
 # site, including ones you're logged into. Pages can contain prompt injection.
 dangerously_allow_all_sites = false
 
-# Port Zen was started with (--remote-debugging-port).
+# Zen profile zenpilot drives. Until it's set, you're asked on first use (or by
+# `zenpilot setup`); "zenpilot" is a dedicated, logged-out profile.
+# profile = "zenpilot"
+
+# Port Zen listens on (--remote-debugging-port).
 port = 9222
+
+# Start Zen on the profile when a tool needs it and nothing listens on the port.
+auto_launch = true
+
+# Ask in a macOS dialog before allowing a blocked site or reopening Zen.
+# false: blocked sites just fail, and Zen must be started by hand.
+prompts = true
 
 # Every tool call is appended here as one JSON line.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
@@ -36,7 +47,9 @@ ALWAYS_ALLOWED = {"about:blank", "about:srcdoc", "about:newtab", "about:home"}
 
 
 class Blocked(Exception):
-    pass
+    def __init__(self, message: str, domain: str | None = None):
+        super().__init__(message)
+        self.domain = domain  # set when adding this domain to the allowlist would allow it
 
 
 @dataclass
@@ -46,6 +59,9 @@ class Config:
     allow_all_sites: bool
     port: int
     audit_log: Path
+    profile: str | None = None  # None: not chosen yet
+    auto_launch: bool = True
+    prompts: bool = True
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -58,12 +74,34 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(allowlist, list) or not all(isinstance(d, str) for d in allowlist):
         raise ValueError(f"{path}: allowlist must be a list of domain strings")
     return Config(
-        allowlist=[d.strip().lower().removeprefix("*.").strip(".") for d in allowlist if d.strip()],
+        allowlist=[normalize_domain(d) for d in allowlist if d.strip()],
         read_only=bool(raw.get("read_only", False)),
         allow_all_sites=raw.get("dangerously_allow_all_sites", False) is True,
         port=int(raw.get("port", defaults["port"])),
         audit_log=Path(raw.get("audit_log", defaults["audit_log"])).expanduser(),
+        profile=str(raw["profile"]) if "profile" in raw else None,
+        auto_launch=raw.get("auto_launch", defaults["auto_launch"]) is True,
+        prompts=raw.get("prompts", defaults["prompts"]) is True,
     )
+
+
+def normalize_domain(d: str) -> str:
+    d = d.strip()
+    if "://" in d:
+        d = urlsplit(d).hostname or ""
+    return d.lower().removeprefix("*.").strip(".")
+
+
+def set_config_value(key: str, value, path: Path = CONFIG_PATH) -> None:
+    """Set one top-level key in the config file, keeping its comments."""
+    load_config(path)  # creates the file and validates it
+    text = path.read_text()
+    line = f"{key} = {json.dumps(value)}"  # JSON strings, lists and bools are valid TOML here
+    pattern = re.compile(rf"(?ms)^{re.escape(key)}\s*=\s*(\[.*?\]|[^\n]*)")
+    new = pattern.sub(lambda _: line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
+    if tomllib.loads(new).get(key) != value:
+        raise ValueError(f"couldn't update {key} in {path}; edit it by hand")
+    path.write_text(new)
 
 
 def domain_of(url: str) -> str:
@@ -84,7 +122,8 @@ def check_url(url: str, cfg: Config) -> str:
         return domain
     raise Blocked(
         f"Domain '{domain}' is not on the zenpilot allowlist. "
-        f"Ask the user to add it to {CONFIG_PATH} if they want you to use it."
+        f"If they want you to use it, ask the user to run `zenpilot allow {domain}`.",
+        domain,
     )
 
 

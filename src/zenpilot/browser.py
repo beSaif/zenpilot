@@ -125,7 +125,7 @@ class Browser:
             except (OSError, websockets.InvalidHandshake) as e:
                 raise BrowserError(
                     f"Can't reach Zen's remote agent on 127.0.0.1:{port} ({e}). "
-                    "Ask the user to start Zen with remote debugging (the `zenr` alias)."
+                    "Ask the user to run `zenpilot launch`, or `zenpilot doctor` to see what's wrong."
                 ) from None
             except BiDiError as e:
                 if e.error == "session not created":
@@ -150,6 +150,10 @@ class Browser:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
             self._bidi = bidi
+
+    @property
+    def connected(self) -> bool:
+        return bool(self._bidi and self._bidi.connected)
 
     async def close(self) -> None:
         if self._bidi:

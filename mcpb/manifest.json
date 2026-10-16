@@ -1,0 +1,91 @@
+{
+  "manifest_version": "0.4",
+  "name": "zenpilot",
+  "display_name": "zenpilot",
+  "version": "0.2.0",
+  "description": "Let Claude drive the Zen browser: tabs, reading pages, clicking and typing, behind a site allowlist.",
+  "long_description": "On first use, a macOS dialog asks which Zen profile Claude should use: a separate, logged-out profile zenpilot creates, or your own. zenpilot then starts Zen with remote debugging (offering to reopen it if it's already open) and controls it over WebDriver BiDi. Sites must be allowed first: a dialog asks when Claude needs a new one. Requires Zen in /Applications. Settings: ~/.config/zenpilot/config.toml.",
+  "author": {
+    "name": "beSaif",
+    "url": "https://github.com/beSaif"
+  },
+  "homepage": "https://github.com/beSaif/zenpilot",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beSaif/zenpilot.git"
+  },
+  "server": {
+    "type": "uv",
+    "entry_point": "server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "server.py"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "list_tabs",
+      "description": "List open tabs with ids. The active tab is marked with *."
+    },
+    {
+      "name": "new_tab",
+      "description": "Open a new tab (it becomes active), optionally loading url."
+    },
+    {
+      "name": "switch_tab",
+      "description": "Make a tab the active one."
+    },
+    {
+      "name": "close_tab",
+      "description": "Close a tab."
+    },
+    {
+      "name": "navigate",
+      "description": "Load url in a tab and wait for the page to finish loading."
+    },
+    {
+      "name": "read_page",
+      "description": "Outline of the page's visible interactive elements and text."
+    },
+    {
+      "name": "click",
+      "description": "Click an element by ref (from read_page) with a real mouse event."
+    },
+    {
+      "name": "type",
+      "description": "Replace the content of a field (by ref) with text using real key events."
+    },
+    {
+      "name": "scroll",
+      "description": "Scroll the page with the mouse wheel by amount pixels."
+    },
+    {
+      "name": "screenshot",
+      "description": "Screenshot of the visible part of a tab."
+    },
+    {
+      "name": "get_text",
+      "description": "Readable main text of the page (prefers <main> or a single <article>)."
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  },
+  "keywords": [
+    "browser",
+    "zen",
+    "firefox",
+    "automation"
+  ],
+  "license": "MIT"
+}
