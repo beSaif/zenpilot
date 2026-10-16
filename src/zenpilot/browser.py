@@ -20,21 +20,49 @@ IDLE_RELEASE_SECONDS = 120
 
 # Scrolls the element into view and reports anything covering its center.
 PREPARE_JS = """(el) => {
-  if (!el.isConnected) return ["stale", "", ""];
+  if (!el.isConnected) return ["stale", "", "", ""];
   el.scrollIntoView({block: "center", inline: "center", behavior: "instant"});
   const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return ["hidden", el.tagName, ""];
+  if (r.width === 0 || r.height === 0) return ["hidden", el.tagName, "", ""];
   const top = el.getRootNode().elementFromPoint?.(r.left + r.width / 2, r.top + r.height / 2);
   const ok = !top || el === top || el.contains(top) || top.contains(el) || top.control === el;
   const classes = typeof top?.className === "string" ? top.className.trim().split(/\\s+/).filter(Boolean) : [];
   const cover = ok ? "" : top.tagName.toLowerCase() + (top.id ? "#" + top.id : "") +
     (classes.length ? "." + classes.slice(0, 2).join(".") : "");
-  return ["ok", el.tagName, cover];
+  return ["ok", el.tagName, cover, el.tagName === "INPUT" ? el.type : ""];
 }"""
 
 SELECT_CONTENT_JS = """(el) => {
   if (typeof el.select === "function" && el.type !== "file") el.select();
   else if (el.isContentEditable) getSelection().selectAllChildren(el);
+}"""
+
+# Inputs whose native UI can't be typed into like a text field: Firefox splits dates and
+# times into segments, and color opens a dialog. These get their value set directly.
+VALUE_INPUTS = {
+    "date": "YYYY-MM-DD",
+    "time": "HH:MM (24-hour)",
+    "datetime-local": "YYYY-MM-DDTHH:MM",
+    "month": "YYYY-MM",
+    "week": "YYYY-Www",
+    "color": "#rrggbb",
+    "range": "a number",
+}
+
+# Uses the prototype's setter so frameworks like React notice the change.
+SET_VALUE_JS = """(el, v) => {
+  if (el.disabled || el.readOnly) return null;
+  el.focus();
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  const old = el.value;
+  set.call(el, v);
+  if (v && !el.value) {  // invalid for this type: the browser cleared it, so put the old value back
+    set.call(el, old);
+    return "";
+  }
+  el.dispatchEvent(new Event("input", {bubbles: true}));
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+  return el.value;
 }"""
 
 GET_TEXT_JS = """(max) => {
@@ -373,10 +401,10 @@ class Browser:
         except BiDiError:
             raise BrowserError(f"The tab ref {key} belonged to is gone. Call list_tabs, then read_page.") from None
 
-    async def _prepare(self, key: str, ref: Ref) -> tuple[str, str]:
-        """Scroll the node into view. Returns (tagName, covering element or "")."""
+    async def _prepare(self, key: str, ref: Ref) -> tuple[str, str, str]:
+        """Scroll the node into view. Returns (tagName, input type or "", covering element or "")."""
         try:
-            status, tag, cover = await self.run(ref.context, PREPARE_JS, {"sharedId": ref.shared_id})
+            status, tag, cover, kind = await self.run(ref.context, PREPARE_JS, {"sharedId": ref.shared_id})
         except BiDiError as e:
             if e.error in STALE_ERRORS:
                 raise _stale(key) from None
@@ -385,7 +413,7 @@ class Browser:
             raise _stale(key)
         if status == "hidden":
             raise BrowserError(f"Ref {key} is no longer visible. Call read_page again.")
-        return tag, cover
+        return tag, kind, cover
 
     async def _actions(self, ref: Ref, actions: list[dict]) -> None:
         await self.call("input.performActions", {"context": ref.context, "actions": actions})
@@ -439,7 +467,7 @@ class Browser:
 
     async def click(self, key: str) -> str:
         ref = self.ref(key)
-        _, cover = await self._prepare(key, ref)
+        _, _, cover = await self._prepare(key, ref)
         result = f"Clicked {key}."
         if cover:
             result += f" Note: its center was covered by <{cover}>, which received the click."
@@ -449,15 +477,23 @@ class Browser:
 
     async def type(self, key: str, text: str, submit: bool) -> str:
         ref = self.ref(key)
-        tag, _ = await self._prepare(key, ref)
-        if tag == "SELECT":
-            # Clicking would open the native popup; focus and type to pick an option instead.
-            await self.run(ref.context, "(el) => el.focus()", {"sharedId": ref.shared_id})
+        tag, kind, _ = await self._prepare(key, ref)
+        if kind in VALUE_INPUTS:
+            value = await self.run(ref.context, SET_VALUE_JS, {"sharedId": ref.shared_id}, text)
+            if value is None:
+                raise BrowserError(f"Ref {key} is disabled or read-only.")
+            if text and not value:
+                raise BrowserError(f"{text!r} isn't a valid {kind} value. Use the format {VALUE_INPUTS[kind]}.")
+            result = f"Set {key} to {value!r}."
         else:
-            await self._click(ref)
-            await self.run(ref.context, SELECT_CONTENT_JS, {"sharedId": ref.shared_id})
-        await self._keys(ref, [SPECIAL_KEYS.get(ch, ch) for ch in text] or [BACKSPACE])
-        result = f"Typed {len(text)} characters into {key}."
+            if tag == "SELECT":
+                # Clicking would open the native popup; focus and type to pick an option instead.
+                await self.run(ref.context, "(el) => el.focus()", {"sharedId": ref.shared_id})
+            else:
+                await self._click(ref)
+                await self.run(ref.context, SELECT_CONTENT_JS, {"sharedId": ref.shared_id})
+            await self._keys(ref, [SPECIAL_KEYS.get(ch, ch) for ch in text] or [BACKSPACE])
+            result = f"Typed {len(text)} characters into {key}."
         if submit and (nav := await self._settle(ref, lambda: self._keys(ref, [ENTER]))):
             result += f" Pressed Enter. {nav}."
         elif submit:

@@ -184,6 +184,19 @@ async def test_trusted_input(site, config):
         assert 'button "frame clicked:true:localhost"' in page
 
 
+async def test_date_and_time_inputs(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        page = await s.ok("read_page")
+        await s.ok("type", ref=ref(page, "textbox", "Delivery time"), text="19:30")
+        await s.ok("type", ref=ref(page, "textbox", "Delivery date"), text="2026-10-16")
+        assert "isn't a valid time" in await s.err("type", ref=ref(page, "textbox", "Delivery time"), text="7:30pm")
+
+        log = await page_log(s)
+        assert "time:19:30" in log and "date:2026-10-16" in log
+        page = await s.ok("read_page")
+        assert 'textbox "Delivery time" type=time value="19:30"' in page
+
+
 async def test_cross_origin_frame_when_allowlisted(site, config):
     config(allowlist=("localhost", "127.0.0.1"))
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):

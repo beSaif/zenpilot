@@ -256,7 +256,9 @@ async def click(ref: str) -> str:
 async def type(ref: str, text: str, submit: bool = False) -> str:
     """Replace the content of a field (by ref) with text using real key events.
 
-    For a <select>, text picks the option starting with it. submit=true presses Enter after.
+    For a <select>, text picks the option starting with it. Date, time, color and range inputs take
+    their value format instead: date YYYY-MM-DD, time HH:MM (24-hour), datetime-local
+    YYYY-MM-DDTHH:MM, month YYYY-MM, week YYYY-Www, color #rrggbb. submit=true presses Enter after.
     """
     await _check_ref(ref)
     return await browser.type(ref, text, submit)

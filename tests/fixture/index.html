@@ -21,6 +21,8 @@
     </select>
     <label><input type="checkbox" id="agree" onclick="log('checkbox:' + this.checked + ':' + event.isTrusted)"> I agree</label>
     <textarea id="bio" aria-label="Bio"></textarea>
+    <input type="time" aria-label="Delivery time" onchange="log('time:' + this.value)">
+    <input type="date" aria-label="Delivery date" onchange="log('date:' + this.value)">
     <button type="submit">Sign up</button>
   </form>
   <button id="trusted" onclick="log('click:' + event.isTrusted)">Check trust</button>
