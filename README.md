@@ -5,6 +5,8 @@
   </picture>
 </h1>
 
+<!-- mcp-name: io.github.beSaif/zenpilot -->
+
 [![CI](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/beSaif/zenpilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 

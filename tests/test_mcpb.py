@@ -1,4 +1,4 @@
-"""The Claude Desktop bundle in mcpb/ must match the package it installs."""
+"""The Claude Desktop bundle in mcpb/ and the registry's server.json must match the package."""
 
 import json
 import tomllib
@@ -15,4 +15,6 @@ async def test_bundle_matches_package():
     bundle = tomllib.loads((ROOT / "mcpb/pyproject.toml").read_text())["project"]
     assert manifest["version"] == bundle["version"] == version
     assert bundle["dependencies"] == [f"zenpilot=={version}"]
+    server = json.loads((ROOT / "server.json").read_text())
+    assert server["version"] == server["packages"][0]["version"] == version
     assert [t["name"] for t in manifest["tools"]] == [t.name for t in await mcp.list_tools()]
