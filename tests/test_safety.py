@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from zenpilot.safety import Blocked, Config, audit, check_url, domain_of, load_config, untrusted
+from zenpilot.safety import Blocked, Config, audit, check_upload, check_url, domain_of, load_config, untrusted
 
 
 def cfg(tmp_path, allowlist=("example.com", "localhost")):
@@ -83,8 +83,9 @@ def test_load_config_writes_default(tmp_path):
     c = load_config(path)
     assert path.exists()
     assert c.allowlist == ["localhost", "127.0.0.1"]
-    assert c.read_only is False and c.port == 9222
+    assert c.read_only is False and c.port == 0  # Zen picks a free port; pages can't guess it
     assert c.allow_all_sites is False
+    assert c.input_style == "natural" and c.show_cursor is True and c.tab_indicator is False
 
 
 def test_load_config_normalizes(tmp_path):
@@ -93,6 +94,34 @@ def test_load_config_normalizes(tmp_path):
     c = load_config(path)
     assert c.allowlist == ["example.com", "github.com"]
     assert c.read_only is True
+
+
+@pytest.mark.parametrize("bad", ['input_style = "turbo"\n', 'upload_dirs = "~/Downloads"\n'])
+def test_load_config_rejects_bad_values(tmp_path, bad):
+    path = tmp_path / "config.toml"
+    path.write_text(bad)
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_check_upload(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    docs, other = tmp_path / "Documents", tmp_path / "elsewhere"
+    for d in (docs, other, tmp_path / ".ssh"):
+        d.mkdir()
+    for f in (docs / "cv.pdf", other / "notes.txt", tmp_path / ".ssh/config", docs / "id_ed25519", docs / ".env"):
+        f.write_text("x")
+    c = cfg(tmp_path)
+    c.upload_dirs = [docs.resolve()]
+    assert check_upload(["~/Documents/cv.pdf"], c) == ([(docs / "cv.pdf").resolve()], False)
+    assert check_upload([str(other / "notes.txt")], c)[1] is True  # outside upload_dirs: ask
+    for secret in ["~/.ssh/config", str(docs / "id_ed25519"), str(docs / ".env")]:
+        with pytest.raises(Blocked, match="never uploads"):
+            check_upload([secret], c)
+    with pytest.raises(Blocked, match="full path"):
+        check_upload(["cv.pdf"], c)
+    with pytest.raises(Blocked, match="no file"):
+        check_upload([str(docs / "missing.pdf")], c)
 
 
 def test_load_config_rejects_bad_allowlist(tmp_path):

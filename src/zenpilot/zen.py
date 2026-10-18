@@ -1,6 +1,7 @@
 """Finding, preparing and launching Zen profiles (macOS)."""
 
 import configparser
+import json
 import re
 import socket
 import subprocess
@@ -101,6 +102,23 @@ def is_safe(profile: Path) -> bool:
     return prefs(profile).get(SAFE_PREF[0]) == SAFE_PREF[1]
 
 
+def live_port(profile: Path) -> int | None:
+    """The port the profile's running Zen serves WebDriver BiDi on, from the file Zen writes."""
+    try:
+        port = int(json.loads((profile / "WebDriverBiDiServer.json").read_text())["ws_port"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return port if port_open(port) and holder(profile) else None
+
+
+def bidi_port(name: str | None, port: int) -> int | None:
+    """Where to reach Zen's remote agent: the fixed port if it listens, else the profile's live one."""
+    if port:
+        return port if port_open(port) else None
+    path = profile_path(name) if name else None
+    return live_port(path) if path else None
+
+
 def port_open(port: int) -> bool:
     with socket.socket() as s:
         s.settimeout(0.5)
@@ -127,15 +145,29 @@ def quit_zen(pid: int, profile: Path, timeout: float = 30) -> None:
         time.sleep(0.25)
 
 
-def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None = None, timeout: float = 20) -> bool:
-    """Start Zen on profile `name` with remote debugging.
+def front() -> None:
+    """Bring Zen's window to the front (for something the user has to do in it)."""
+    if ZEN_APP.exists():
+        subprocess.run(["open", "-a", str(ZEN_APP)], capture_output=True)
+
+
+def launch(
+    name: str,
+    port: int,
+    confirm_relaunch: Callable[[str], bool] | None = None,
+    timeout: float = 20,
+    system_access: bool = False,
+) -> bool:
+    """Start Zen on profile `name` with remote debugging. port 0 lets Zen pick a free port.
 
     If the profile is already open without it, Zen is quit and reopened when
-    confirm_relaunch(question) agrees. Returns False if something already listens on the port.
+    confirm_relaunch(question) agrees. Returns False if the remote agent is already reachable.
     """
-    if port_open(port):
+    if port and port_open(port):
         return False
     path = resolve(name)
+    if not port and live_port(path):
+        return False
     ensure_prefs(path, [SAFE_PREF])  # before Zen reads user.js, or remote debugging weakens the profile
     if pid := holder(path):
         question = (
@@ -150,14 +182,20 @@ def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None 
         quit_zen(pid, path)
     if not ZEN_APP.exists():
         raise ZenError(f"Zen isn't installed at {ZEN_APP}.")
-    subprocess.run(
-        ["open", "-na", str(ZEN_APP), "--args", "-P", name, "--remote-debugging-port", str(port)], check=True
-    )
+    (path / "WebDriverBiDiServer.json").unlink(missing_ok=True)  # so a stale one isn't taken for this run
+    cmd = ["open", "-na", str(ZEN_APP)]
+    if system_access:  # tab_indicator in the config: privileged and opt-in
+        cmd += ["--env", "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1"]
+    cmd += ["--args", "-P", name, "--remote-debugging-port", str(port)]
+    if system_access:
+        cmd.append("--remote-allow-system-access")
+    subprocess.run(cmd, check=True)
     deadline = time.monotonic() + timeout
-    while not port_open(port):
+    while not (port_open(port) if port else live_port(path)):
         if time.monotonic() > deadline:
+            where = f"on port {port}" if port else "(no WebDriverBiDiServer.json in the profile)"
             raise ZenError(
-                f"Started Zen on profile '{name}', but nothing is listening on port {port} after {timeout:g}s. "
+                f"Started Zen on profile '{name}', but nothing is listening {where} after {timeout:g}s. "
                 "Check that Zen started, or run `zenpilot doctor`."
             )
         time.sleep(0.25)

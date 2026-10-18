@@ -4,7 +4,7 @@ import json
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -28,8 +28,9 @@ dangerously_allow_all_sites = false
 # `zenpilot setup`); "zenpilot" is a dedicated, logged-out profile.
 # profile = "zenpilot"
 
-# Port Zen listens on (--remote-debugging-port).
-port = 9222
+# Port Zen's remote agent listens on. 0 picks a free port at each launch, so web pages can't
+# guess it; zenpilot reads it from the profile. Set a number (like 9222) to fix it.
+port = 0
 
 # Start Zen on the profile when a tool needs it and nothing listens on the port.
 auto_launch = true
@@ -38,9 +39,39 @@ auto_launch = true
 # false: blocked sites just fail, and Zen must be started by hand.
 prompts = true
 
+# How Claude moves the mouse and types. "natural": curved mouse paths, a person's typing pace
+# and wheel scrolling, which is what sites expect from a person. "careful": slower still.
+# "fast": instant, like plain automation; some sites block that as a bot.
+input_style = "natural"
+
+# Show a cursor and a glow in the page while Claude acts, like Claude in Chrome does.
+# They're left out of screenshots.
+show_cursor = true
+
+# Folders Claude may upload files from without asking. Outside them, a dialog asks each time.
+upload_dirs = []
+
+# EXPERIMENTAL, DANGER: also outline the tab Claude is using in Zen's tab strip. This starts Zen
+# with privileged remote access, so any program on this Mac that reaches the port could run code
+# as you, not just control pages.
+tab_indicator = false
+
 # Every tool call is appended here as one JSON line.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 """
+
+INPUT_STYLES = ("natural", "careful", "fast")
+
+# Never uploaded, whatever the model asks: credentials, keys and browser data.
+SECRET_DIRS = [
+    "~/.ssh", "~/.gnupg", "~/.aws", "~/.azure", "~/.kube", "~/.docker", "~/.config/gcloud", "~/.config/gh",
+    "~/.config/zenpilot", "~/.netrc", "~/Library/Keychains", "~/Library/Cookies", "~/Library/Application Support/zen",
+    "~/Library/Application Support/Firefox", "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Claude", "~/.claude",
+]  # fmt: skip
+SECRET_NAMES = re.compile(
+    r"(?i)^(id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx|kdbx|keychain-db)|\.env(\..*)?)$"
+)
 
 # Pages that carry no site content and inherit nothing worth protecting.
 ALWAYS_ALLOWED = {"about:blank", "about:srcdoc", "about:newtab", "about:home"}
@@ -62,6 +93,10 @@ class Config:
     profile: str | None = None  # None: not chosen yet
     auto_launch: bool = True
     prompts: bool = True
+    input_style: str = "natural"
+    show_cursor: bool = True
+    upload_dirs: list[Path] = field(default_factory=list)
+    tab_indicator: bool = False
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -73,6 +108,12 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     allowlist = raw.get("allowlist", [])
     if not isinstance(allowlist, list) or not all(isinstance(d, str) for d in allowlist):
         raise ValueError(f"{path}: allowlist must be a list of domain strings")
+    style = raw.get("input_style", defaults["input_style"])
+    if style not in INPUT_STYLES:
+        raise ValueError(f"{path}: input_style must be one of {', '.join(map(repr, INPUT_STYLES))}")
+    upload_dirs = raw.get("upload_dirs", [])
+    if not isinstance(upload_dirs, list) or not all(isinstance(d, str) for d in upload_dirs):
+        raise ValueError(f"{path}: upload_dirs must be a list of folder paths")
     return Config(
         allowlist=[normalize_domain(d) for d in allowlist if d.strip()],
         read_only=bool(raw.get("read_only", False)),
@@ -82,6 +123,10 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         profile=str(raw["profile"]) if "profile" in raw else None,
         auto_launch=raw.get("auto_launch", defaults["auto_launch"]) is True,
         prompts=raw.get("prompts", defaults["prompts"]) is True,
+        input_style=style,
+        show_cursor=raw.get("show_cursor", defaults["show_cursor"]) is True,
+        upload_dirs=[Path(d).expanduser().resolve() for d in upload_dirs if d.strip()],
+        tab_indicator=raw.get("tab_indicator", False) is True,
     )
 
 
@@ -155,3 +200,28 @@ def audit(cfg: Config, tool: str, params: dict, domain: str | None, ok: bool, ms
     cfg.audit_log.parent.mkdir(parents=True, exist_ok=True)
     with cfg.audit_log.open("a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def check_upload(paths: list[str], cfg: Config) -> tuple[list[Path], bool]:
+    """Resolve files to upload; raise Blocked for missing or secret ones.
+
+    Returns (paths, ask): ask is True unless every file is inside one of cfg.upload_dirs.
+    """
+    if not paths:
+        raise Blocked("No files given.")
+    if len(paths) > 20:
+        raise Blocked("Upload at most 20 files at a time.")
+    secret = [Path(d).expanduser().resolve() for d in SECRET_DIRS]
+    out = []
+    for raw in paths:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            raise Blocked(f"Use a full path for {raw!r} (like ~/Documents/file.pdf).")
+        p = p.resolve()
+        if SECRET_NAMES.match(p.name) or any(p.is_relative_to(d) for d in secret):
+            raise Blocked(f"zenpilot never uploads {p}: it looks like a key, password store or browser data.")
+        if not p.is_file():
+            raise Blocked(f"There's no file at {p}.")
+        out.append(p)
+    ask = not all(any(p.is_relative_to(d) for d in cfg.upload_dirs) for p in out)
+    return out, ask

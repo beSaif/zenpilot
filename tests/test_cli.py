@@ -86,6 +86,40 @@ def test_launch_reopens_an_open_profile_only_when_confirmed(zen_dir, fake_launch
     assert "Your tabs will be restored" in questions[0]
 
 
+def test_live_port_reads_the_profile(zen_dir, monkeypatch):
+    profile = zen_dir / "Profiles/abc.zenpilot"
+    monkeypatch.setattr(zen, "holder", lambda path: 123)
+    monkeypatch.setattr(zen, "port_open", lambda port: port == 50123)
+    assert zen.live_port(profile) is None  # no file: not running with remote debugging
+    (profile / "WebDriverBiDiServer.json").write_text('{"ws_host": "127.0.0.1", "ws_port": 50123}')
+    assert zen.live_port(profile) == 50123
+    assert zen.bidi_port("zenpilot", 0) == 50123
+    assert zen.bidi_port("zenpilot", 9222) is None  # a fixed port wins
+    monkeypatch.setattr(zen, "holder", lambda path: None)
+    assert zen.live_port(profile) is None  # stale file from a Zen that's gone
+
+
+def test_launch_with_a_random_port(zen_dir, monkeypatch):
+    profile = zen_dir / "Profiles/abc.zenpilot"
+    cmds = []
+    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)
+    monkeypatch.setattr(zen, "holder", lambda path: 123 if cmds else None)
+    monkeypatch.setattr(zen, "port_open", lambda port: bool(cmds))
+
+    def run(cmd, **kw):
+        cmds.append(cmd)
+        (profile / "WebDriverBiDiServer.json").write_text('{"ws_port": 50123}')
+
+    monkeypatch.setattr(zen.subprocess, "run", run)
+    (profile / "WebDriverBiDiServer.json").write_text('{"ws_port": 9}')  # stale
+    assert zen.launch("zenpilot", 0) is True
+    assert cmds[0][-2:] == ["--remote-debugging-port", "0"]
+    assert "--remote-allow-system-access" not in cmds[0]
+    cmds.clear()  # Zen quit
+    zen.launch("zenpilot", 0, system_access=True)
+    assert "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1" in cmds[0] and cmds[0][-1] == "--remote-allow-system-access"
+
+
 def test_launch_skips_when_port_is_taken(monkeypatch):
     monkeypatch.setattr(zen, "port_open", lambda port: True)
     assert zen.launch("anything", 9222) is False

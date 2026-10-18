@@ -51,12 +51,14 @@ def site():
 def config(tmp_path):
     path = tmp_path / "config.toml"
 
-    def write(allowlist=("localhost",), read_only=False):
+    def write(allowlist=("localhost",), read_only=False, **extra):
         path.write_text(
             f"allowlist = {json.dumps(list(allowlist))}\n"
             f"read_only = {'true' if read_only else 'false'}\n"
             "prompts = false\n"
+            "port = 9222\n"
             f'audit_log = "{tmp_path / "audit.jsonl"}"\n'
+            + "".join(f"{k} = {json.dumps(v)}\n" for k, v in extra.items())
         )
 
     write()
@@ -284,3 +286,86 @@ async def test_idle_release_lets_another_client_in(monkeypatch):
     finally:
         await first.close()
         await second.close()
+
+
+async def test_forms(site, config, tmp_path):
+    upload = tmp_path / "uploads"
+    upload.mkdir()
+    (upload / "cv.txt").write_text("hello")
+    config(upload_dirs=[str(upload)], input_style="fast")
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/forms.html"):
+        page = await s.ok("read_page")
+        assert 'file "Upload résumé" accept=".txt,.pdf" hidden' in page
+        filled = await s.ok(
+            "fill_form",
+            fields=[
+                {"ref": ref(page, "textbox", "First name"), "value": "Ada"},
+                {"ref": ref(page, "select", "Size"), "value": "Large"},
+                {"ref": ref(page, "select", "Toppings"), "value": ["Bacon", "Onion"]},
+                {"ref": ref(page, "checkbox", "Newsletter"), "value": True},
+                {"ref": ref(page, "radio", "Express"), "value": True},
+                {"ref": ref(page, "textbox", "Birthday"), "value": "1815-12-10"},
+                {"ref": ref(page, "slider", "Volume"), "value": "5"},
+            ],
+        )
+        assert filled.startswith("Filled all fields."), filled
+        assert "already" in await s.ok(
+            "fill_form", fields=[{"ref": ref(page, "checkbox", "Newsletter"), "value": "yes"}]
+        )
+        failed = await s.err("fill_form", fields=[{"ref": ref(page, "textbox", "Pick a day"), "value": "2026-01-01"}])
+        assert "read-only" in failed and "date picker" in failed
+
+        assert "Switzerland" in await s.ok("select_option", ref=ref(page, "combobox", "Country: none"), option="swi")
+        assert "Geneva" in await s.ok("select_option", ref=ref(page, "combobox", "City"), option="Geneva")
+        assert "several" in (await s.err("select_option", ref=ref(page, "select", "Size"), option="Lar")).lower()
+
+        uploaded = await s.ok("upload_file", ref=ref(page, "file", "Upload résumé"), paths=[str(upload / "cv.txt")])
+        assert "Attached cv.txt" in uploaded
+        assert "never uploads" in await s.err(
+            "upload_file", ref=ref(page, "file", "Upload résumé"), paths=["~/.ssh/id_rsa"]
+        )
+
+        await s.ok("click", ref=ref(page, "button", "Open popup"))
+        await s.ok("press_key", key="Escape")
+
+        log = await page_log(s)
+        for line in ["size:l:true", "toppings:bacon,onion", "news:true", "speed:exp", "birthday:1815-12-10",
+                     "volume:5", "country:Switzerland", "city:Geneva", "file:cv.txt:", "escape"]:  # fmt: skip
+            assert line in log, (line, log)
+        page = await s.ok("read_page")
+        assert 'textbox "First name" value="Ada"' in page
+        assert 'value="cv.txt"' in page
+
+
+async def test_natural_input_and_sandbox(site, config):
+    config(input_style="natural")
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/forms.html"):
+        page = await s.ok("read_page")
+        await s.ok("click", ref=ref(page, "button", "Far button"))  # below the fold: reached by wheel
+        await s.ok("type", ref=ref(page, "textbox", "First name"), text="Ada L!")
+        await s.ok("click", ref=ref(page, "button", "Report"))
+        report = json.loads(re.search(r"stats:(\{.*\})", await page_log(s)).group(1))
+        assert report["hooked"] == 0  # zenpilot's scripts never ran the page's hooked DOM methods
+        assert report["sandboxLeak"] == "undefined"  # nor left globals the page can see
+        assert report["overlay"] is True  # but the cursor overlay is on screen
+        assert report["wheels"] >= 3  # scrolled to the far button with wheel notches
+        assert report["moves"] >= 20  # the pointer traveled, not teleported
+        assert min(report["holds"]) >= 40  # buttons were held like a finger holds them
+        assert "A+shift" in report["keys"] and "L+shift" in report["keys"] and "!+shift" in report["keys"]
+        assert "d" in report["keys"]
+        page = await s.ok("read_page")
+        assert "Typing" not in page and "Scrolling" not in page  # the overlay isn't page content
+        shot = await s.call("screenshot")
+        assert not shot.is_error
+        report = await s.ok("click", ref=ref(page, "button", "Report"))
+
+
+async def test_captcha_detection_and_handoff(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/captcha.html") as tab:
+        page = await s.ok("read_page")
+        assert page.startswith(f"Tab {tab}\n[zenpilot: this page is showing a CAPTCHA or bot check (Cloudflare)")
+        assert "reCAPTCHA" not in page  # an invisible reCAPTCHA on the submit button isn't a challenge
+        arrived = await s.ok("navigate", url=f"{site}/captcha.html")
+        assert "handoff_to_user" in arrived
+        handed = await s.ok("handoff_to_user", reason="Please complete the check")
+        assert "Tell the user in chat" in handed

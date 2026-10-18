@@ -1,4 +1,4 @@
-// Runs in the page via script.callFunction. Walks the rendered tree (including
+// Runs in zenpilot's sandbox via script.callFunction. Walks the rendered tree (including
 // open shadow roots) and returns [items, truncated], where each item is
 // [depth, line, node|null, frameWindow|null]. Nodes come back as BiDi sharedIds.
 (maxItems) => {
@@ -74,6 +74,11 @@
     const n = name(el);
     if (n) line += " " + q(n);
     if (r === "textbox" && el.tagName === "INPUT" && el.type !== "text") line += ` type=${el.type}`;
+    if (r === "file") {
+      if (el.multiple) line += " multiple";
+      if (el.accept) line += " accept=" + q(clip(el.accept, 40));
+      if (el.files?.length) line += " value=" + q(clip([...el.files].map((f) => f.name).join(", "), 60));
+    }
     if (el.tagName === "SELECT") {
       line += " value=" + q(clip(el.selectedOptions[0]?.text, 40));
     } else if ((r === "textbox" || r === "searchbox") && el.value) {
@@ -113,6 +118,13 @@
     return [...el.childNodes];
   };
 
+  // Sites often hide the real file input behind a styled button. It still takes files, so
+  // list it (as hidden) wherever it sits, even inside something not rendered.
+  const hiddenFiles = (el, depth) => {
+    const inputs = el.matches("input[type=file]") ? [el] : el.querySelectorAll("input[type=file]");
+    for (const f of inputs) if (!f.disabled) emit(depth, describe(f) + " hidden", f);
+  };
+
   const walk = (node, depth) => {
     if (truncated) return;
     if (node.nodeType === 3) {
@@ -123,7 +135,8 @@
     }
     if (node.nodeType !== 1) return;
     const el = node;
-    if (SKIP.has(el.tagName) || el.getAttribute("aria-hidden") === "true" || !rendered(el)) return;
+    if (SKIP.has(el.tagName)) return;
+    if (el.getAttribute("aria-hidden") === "true" || !rendered(el)) return hiddenFiles(el, depth);
 
     if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
       if (hasBox(el)) emit(depth, "frame " + q(clip(el.title || el.name || el.src, 60)), null, el.contentWindow);
@@ -131,6 +144,7 @@
     }
     if (el.matches(INTERACTIVE)) {
       if (hasBox(el)) emit(depth, describe(el), el);
+      else if (el.matches("input[type=file]")) hiddenFiles(el, depth);
       if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1);
       return;
     }

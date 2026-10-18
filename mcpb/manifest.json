@@ -61,6 +61,26 @@
       "description": "Replace the content of a field (by ref) with text using real key events."
     },
     {
+      "name": "select_option",
+      "description": "Pick an option by its visible text in a dropdown."
+    },
+    {
+      "name": "fill_form",
+      "description": "Fill several form fields in one call, each with the right kind of input."
+    },
+    {
+      "name": "upload_file",
+      "description": "Attach files from this Mac to a file upload field."
+    },
+    {
+      "name": "press_key",
+      "description": "Press a key or shortcut, like Escape, Enter, ArrowDown or Shift+Tab."
+    },
+    {
+      "name": "handoff_to_user",
+      "description": "Ask the person at the Mac to do something in Zen themselves, then carry on."
+    },
+    {
       "name": "scroll",
       "description": "Scroll the page with the mouse wheel by amount pixels."
     },

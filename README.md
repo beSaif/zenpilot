@@ -54,8 +54,27 @@ The first time, a few popups may show up. Only you see them, not Claude:
 Pressing Enter always picks the safe answer.
 
 Claude can open, switch and close tabs, go to a URL, read the page, click, type, scroll and
-take screenshots. It can't touch cookies, passwords or downloads, and it can't run its own
-JavaScript.
+take screenshots. It can fill whole forms at once: text, dates and times, dropdowns (native
+and custom ones), checkboxes, radio buttons, sliders and file uploads. It can't touch
+cookies, passwords or downloads, and it can't run its own JavaScript.
+
+While Claude works, you'll see its cursor glide to whatever it clicks, a glow around the
+page and a "Typing…" badge, like in Claude in Chrome. They're left out of screenshots.
+
+### CAPTCHAs
+
+Claude doesn't solve CAPTCHAs or "are you human" checks. When one shows up, it brings Zen
+to the front and asks you to do it, then carries on once it's gone. It does the same for
+signing in, two-factor codes, and anything you should confirm yourself.
+
+### Not looking like a bot
+
+Sites score how input moves, so zenpilot moves the mouse along a curved path and slows down
+as it reaches the target, holds clicks for about a tenth of a second, types at a person's
+pace with Shift for capitals, and scrolls with the wheel. Its page scripts run in a sandbox
+that pages can't see. It doesn't fake anything about your browser: Firefox still tells
+sites it's under remote control (`navigator.webdriver`), and some sites refuse any browser
+that does. For those, do it yourself.
 
 ## Staying safe
 
@@ -67,8 +86,12 @@ JavaScript.
 - **Read-only mode.** Set `read_only = true` and Claude can look but not click or type.
 - **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`.
 - **Remote control is open while Zen runs this way.** Other apps on your Mac could connect
-  to it too, and some sites (banks, Cloudflare checks) may think you're a bot. When you're
-  done, quit Zen and open it normally.
+  to it too, and some sites (banks, Cloudflare checks) may think you're a bot. zenpilot
+  picks a random port each time so web pages can't easily find it. When you're done, quit
+  Zen and open it normally.
+- **Uploads ask first.** Claude can only attach a file after you say yes in a popup, unless
+  it's in a folder you listed in `upload_dirs`. Keys, password stores and browser data are
+  never uploaded.
 
 zenpilot also stops Zen from switching off its own protections (Safe Browsing, the popup
 blocker and so on), which would otherwise happen when remote control is on.
@@ -92,16 +115,25 @@ read_only = false                        # true: Claude can look but not click o
 profile = "zenpilot"                     # which Zen profile Claude uses
 auto_launch = true                       # open Zen when Claude needs it
 prompts = true                           # show the popups above
-port = 9222
+port = 0                                 # 0: a free port each launch. Or pick one, like 9222
+input_style = "natural"                  # or "careful" (slower) or "fast" (instant, bot-like)
+show_cursor = true                       # Claude's cursor and glow in the page
+upload_dirs = []                         # folders Claude may upload from without asking
+tab_indicator = false                    # outline Claude's tab in the tab strip (see below)
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 ```
+
+`tab_indicator = true` outlines the tab Claude is using in Zen's tab strip. To do that,
+Zen has to start with privileged remote access, which means any program on your Mac that
+reaches the port could run code as you. It's off by default; only turn it on if you're sure.
 
 ## Good to know
 
 - Only one Claude can drive Zen at a time. zenpilot lets go after 2 minutes of doing
   nothing, so Claude Desktop and Claude Code can take turns.
-- Zen can be hidden or behind other windows. It still works.
+- Zen can be hidden or behind other windows. It still works, but some sites are stricter
+  with input to a window that isn't in front.
 - Zen loads restored tabs lazily, so Claude only sees an old tab once you've opened it.
 - Stuck? Run `zenpilot doctor`. If Zen says it already has a session after a crash, restart Zen.
 
@@ -111,7 +143,7 @@ dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 git clone https://github.com/beSaif/zenpilot.git && cd zenpilot
 uv sync && uv run zenpilot setup     # points Claude at your clone
 uv run pytest -m "not integration"   # unit tests
-uv run pytest                        # all tests, needs Zen running (zenpilot launch)
+uv run pytest                        # all tests, needs Zen on port 9222 (zenpilot launch, port = 9222)
 ```
 
 Pushing a `v*` tag that matches `pyproject.toml` publishes to PyPI and makes a GitHub

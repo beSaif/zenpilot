@@ -138,3 +138,33 @@ async def test_close_ends_session(connect):
     await client.close()
     assert sock.sent[-1]["method"] == "session.end"
     assert sock.closed
+
+
+async def test_browser_scripts_run_sandboxed_and_skip_console_events(connect, monkeypatch):
+    """Page scripts must not be able to see zenpilot's code, or be poked by console capture.
+
+    Subscribing to log.* makes Firefox serialize console arguments, which runs page getters:
+    a known way pages detect automation. Every script runs in zenpilot's sandbox.
+    """
+    from zenpilot import browser as browser_mod
+
+    def respond(cmd):
+        result = {"type": "success", "result": {"type": "string", "value": "ok"}} if "script" in cmd["method"] else {}
+        return {"type": "success", "id": cmd["id"], "result": result}
+
+    sockets = []
+
+    async def fake_connect(url, **kwargs):
+        sockets.append(FakeSocket(respond))
+        return sockets[-1]
+
+    monkeypatch.setattr(bidi_mod.websockets, "connect", fake_connect)
+    b = browser_mod.Browser()
+    await b.connect(9222)
+    await b.run("ctx", "() => 1")
+    sent = sockets[0].sent
+    events = [e for c in sent if c["method"] == "session.subscribe" for e in c["params"]["events"]]
+    assert events and not any(e.startswith("log.") for e in events)
+    calls = [c for c in sent if c["method"] == "script.callFunction"]
+    assert calls and all(c["params"]["target"]["sandbox"] == browser_mod.SANDBOX for c in calls)
+    await b.close()

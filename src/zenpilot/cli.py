@@ -129,18 +129,23 @@ def setup(args) -> int:
         print(register_desktop(cmd))
     if args.no_launch:
         return 0
-    if zen.launch(name, cfg.port, _yes if interactive else None):
+    if zen.launch(name, cfg.port, _yes if interactive else None, system_access=cfg.tab_indicator):
         print(f"✓ Started Zen on profile '{name}'")
-    return 0 if asyncio.run(_print_tabs(cfg.port)) else 1
+    port = zen.bidi_port(name, cfg.port)
+    return 0 if port and asyncio.run(_print_tabs(port)) else 1
 
 
 def launch(args) -> int:
     cfg = load_config()
     name = args.profile or cfg.profile or zen.DEFAULT_PROFILE
-    if zen.launch(name, cfg.port, _yes if _interactive() else None):
-        print(f"Started Zen on profile '{name}' with remote debugging on port {cfg.port}.")
-    else:
+    started = zen.launch(name, cfg.port, _yes if _interactive() else None, system_access=cfg.tab_indicator)
+    port = zen.bidi_port(name, cfg.port)
+    if started:
+        print(f"Started Zen on profile '{name}' with remote debugging on port {port}.")
+    elif cfg.port:
         print(f"Something is already listening on port {cfg.port}, probably Zen with remote debugging.")
+    else:
+        print(f"Zen is already running on profile '{name}' with remote debugging on port {port}.")
     return 0
 
 
@@ -161,6 +166,10 @@ def doctor(args) -> int:
     modes = [m for m, on in [("read-only", cfg.read_only), ("ALL SITES ALLOWED", cfg.allow_all_sites)] if on]
     print(f"✓ Config {CONFIG_PATH}" + (f" ({', '.join(modes)})" if modes else ""))
     print(f"  allowlist: {', '.join(cfg.allowlist) or '(empty)'}")
+    extras = [f"input: {cfg.input_style}", "cursor shown" if cfg.show_cursor else "cursor hidden"]
+    if cfg.tab_indicator:
+        extras.append("TAB INDICATOR ON (Zen gets privileged remote access)")
+    print(f"  {', '.join(extras)}")
     report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
     path = zen.profile_path(cfg.profile) if cfg.profile else None
     if cfg.profile is None:
@@ -173,12 +182,13 @@ def doctor(args) -> int:
         )
         seen = {**zen.prefs(path, "prefs.js"), **zen.prefs(path)}.get(zen.WELCOME_PREF[0]) == "true"
         report(seen, "Welcome screen dismissed", "Zen's welcome screen isn't dismissed yet. Run `zenpilot setup`.")
-    if zen.port_open(cfg.port):
-        problems += not asyncio.run(_print_tabs(cfg.port))
+    where = f"on port {cfg.port}" if cfg.port else "with remote debugging"
+    if port := zen.bidi_port(cfg.profile, cfg.port):
+        problems += not asyncio.run(_print_tabs(port))
     elif cfg.auto_launch:
-        print(f"· Zen isn't listening on port {cfg.port}; zenpilot will start it on the first tool call")
+        print(f"· Zen isn't running {where}; zenpilot will start it on the first tool call")
     else:
-        report(False, "", f"Zen isn't listening on port {cfg.port}. Run `zenpilot launch`.")
+        report(False, "", f"Zen isn't running {where}. Run `zenpilot launch`.")
     for client, file in [("Claude Code", CLAUDE_CODE_CONFIG), ("Claude Desktop", DESKTOP_CONFIG)]:
         cmd = _registered(file)
         print(f"✓ {client}: {cmd}" if cmd else f"· {client}: not registered (`zenpilot setup` does it)")

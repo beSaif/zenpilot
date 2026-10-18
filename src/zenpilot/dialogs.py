@@ -39,3 +39,8 @@ def choose(message: str, items: list[str]) -> str | None:
         [message, *items],
     )
     return None if out in (None, "false") else out
+
+
+def notify(message: str) -> None:
+    """A notification banner; doesn't wait for anything."""
+    _osascript('display notification (item 1 of argv) with title "zenpilot"', [message])

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>zenpilot forms</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; }
+  [role=listbox] { border: 1px solid #888; margin: 0; padding: 0; list-style: none; width: 200px; }
+  [role=option] { padding: 4px; cursor: pointer; }
+  #slider { width: 200px; height: 20px; background: #ddd; position: relative; }
+  .upload-btn { display: inline-block; padding: 6px 12px; background: #36c; color: white; cursor: pointer; }
+  #popup { position: fixed; top: 40%; left: 30%; padding: 20px; background: #fff; border: 2px solid #000; }
+  #spacer { height: 1800px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Forms</h1>
+  <label>First name <input id="first" name="first"></label>
+  <select id="size" aria-label="Size" onchange="log('size:' + this.value + ':' + event.isTrusted)">
+    <option value="">Choose…</option><option value="s">Small</option><option value="m">Medium</option>
+    <option value="l">Large</option><option value="xl">Large Extra</option>
+  </select>
+  <select id="toppings" aria-label="Toppings" multiple onchange="log('toppings:' + [...this.selectedOptions].map(o => o.value).join(','))">
+    <option value="bacon">Bacon</option><option value="cheese">Cheese</option><option value="onion">Onion</option>
+  </select>
+  <label><input type="checkbox" id="news" onchange="log('news:' + this.checked)"> Newsletter</label>
+  <fieldset><legend>Delivery</legend>
+    <label><input type="radio" name="speed" value="std" checked onchange="log('speed:std')"> Standard</label>
+    <label><input type="radio" name="speed" value="exp" onchange="log('speed:exp')"> Express</label>
+  </fieldset>
+  <input type="date" aria-label="Birthday" onchange="log('birthday:' + this.value)">
+  <input aria-label="Pick a day" readonly placeholder="Pick a day">
+
+  <div>
+    <button id="country" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="countries"
+      onclick="toggleList()">Country: <span id="country-value">none</span></button>
+    <ul id="countries" role="listbox" hidden>
+      <li role="option">Switzerland</li><li role="option">Sweden</li><li role="option">India</li>
+    </ul>
+  </div>
+
+  <div>
+    <input id="city" role="combobox" aria-label="City" aria-autocomplete="list" aria-controls="cities" oninput="filterCities()">
+    <ul id="cities" role="listbox" hidden></ul>
+  </div>
+
+  <div id="slider" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="10" aria-valuenow="2"></div>
+
+  <label class="upload-btn">Upload résumé <input type="file" id="cv" accept=".txt,.pdf" style="display:none"
+    onchange="log('file:' + [...this.files].map(f => f.name).join(',') + ':' + event.isTrusted)"></label>
+
+  <button id="open-popup" onclick="document.getElementById('popup').hidden = false">Open popup</button>
+  <div id="popup" hidden>A popup <button onclick="this.parentElement.hidden = true">Close</button></div>
+
+  <div id="spacer">Tall content</div>
+  <button id="far" onclick="log('far:' + event.isTrusted)">Far button</button>
+  <button id="report" onclick="report()">Report</button>
+  <pre id="log" aria-label="Log"></pre>
+</main>
+<script>
+  function log(msg) { document.getElementById("log").textContent += msg + "\n"; }
+  function toggleList() {
+    const list = document.getElementById("countries"), btn = document.getElementById("country");
+    list.hidden = !list.hidden;
+    btn.setAttribute("aria-expanded", String(!list.hidden));
+  }
+  document.querySelectorAll("#countries [role=option]").forEach((o) => o.onclick = () => {
+    document.getElementById("country-value").textContent = o.textContent;
+    log("country:" + o.textContent);
+    toggleList();
+  });
+  const CITIES = ["Geneva", "Genoa", "Bern", "Zurich"];
+  function filterCities() {
+    const q = document.getElementById("city").value.toLowerCase(), list = document.getElementById("cities");
+    list.innerHTML = "";
+    for (const c of CITIES.filter((c) => q && c.toLowerCase().startsWith(q))) {
+      const li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.textContent = c;
+      li.onclick = () => { document.getElementById("city").value = c; list.hidden = true; log("city:" + c); };
+      list.appendChild(li);
+    }
+    list.hidden = !list.children.length;
+  }
+  const slider = document.getElementById("slider");
+  slider.onkeydown = (e) => {
+    let v = +slider.getAttribute("aria-valuenow");
+    if (e.key === "ArrowRight") v = Math.min(10, v + 1);
+    if (e.key === "ArrowLeft") v = Math.max(0, v - 1);
+    slider.setAttribute("aria-valuenow", v);
+    log("volume:" + v);
+  };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { document.getElementById("popup").hidden = true; log("escape"); }
+  });
+  // How input arrives, for the natural-input test.
+  window.stats = { moves: 0, wheels: 0, downAt: 0, holds: [], keys: [] };
+  addEventListener("mousemove", () => stats.moves++, true);
+  addEventListener("wheel", () => stats.wheels++, true);
+  addEventListener("mousedown", () => stats.downAt = performance.now(), true);
+  addEventListener("mouseup", () => stats.holds.push(performance.now() - stats.downAt), true);
+  addEventListener("keydown", (e) => stats.keys.push(e.key + (e.shiftKey ? "+shift" : "")), true);
+  function report() {
+    const host = [...document.documentElement.children].find((el) => el.getAttribute("aria-hidden") === "true");
+    log("stats:" + JSON.stringify({ ...stats, hooked: window.hooked, sandboxLeak: typeof window.zenpilotOverlay,
+      overlay: !!host && host.matches(":popover-open") }));
+  }
+  // Page code that watches DOM APIs, the way some bot detectors do.
+  window.hooked = 0;
+  for (const [proto, name] of [[Element.prototype, "matches"], [Element.prototype, "getBoundingClientRect"],
+                               [Document.prototype, "querySelectorAll"], [Element.prototype, "checkVisibility"]]) {
+    const orig = proto[name];
+    proto[name] = function (...a) { window.hooked++; return orig.apply(this, a); };
+  }
+</script>
+</body>
+</html>
