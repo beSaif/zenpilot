@@ -149,6 +149,7 @@ async def test_read_page_outline(site, config):
             ("textbox", "Email"),
             ("select", "Color"),
             ("checkbox", "I agree"),
+            ("checkbox", "Fly"),
             ("button", "Sign up"),
             ("textbox", "Shadow input"),
             ("button", "Shadow button"),
@@ -157,6 +158,9 @@ async def test_read_page_outline(site, config):
         ]:
             ref(page, role, name)
         assert 'textbox "Password" type=password value="•••"' in page
+        assert 'checkbox "I agree" unchecked' in page
+        assert 'checkbox "Fly" unchecked' in page  # hidden input, ref on its label
+        assert re.search(r'"Cracked"\n\s*r\d+ clickable\n', page)  # div with cursor: pointer
         assert "secret" not in page
         assert "Invisible button" not in page
         assert 'frame "Cross-origin frame" [skipped: 127.0.0.1 not allowlisted]' in page
@@ -170,17 +174,28 @@ async def test_trusted_input(site, config):
         await s.ok("type", ref=ref(page, "textbox", "Name"), text="Ada Lovelace")
         await s.ok("type", ref=ref(page, "select", "Color"), text="Blue")
         await s.ok("click", ref=ref(page, "checkbox", "I agree"))
+        await s.ok("click", ref=ref(page, "checkbox", "Fly"))
+        await s.ok("click", ref=re.search(r'"Cracked"\n\s*(r\d+) clickable', page).group(1))
         await s.ok("type", ref=ref(page, "textbox", "Shadow input"), text="in shadow")
         await s.ok("click", ref=ref(page, "button", "Shadow button"))
         await s.ok("click", ref=ref(page, "button", "Frame button"))
         await s.ok("click", ref=ref(page, "button", "Bottom button"))  # far below the fold
 
         log = await page_log(s)
-        for line in ["click:true", "select:blue:true", "checkbox:true:true", "shadow:in shadow:true", "bottom:true"]:
+        for line in [
+            "click:true",
+            "select:blue:true",
+            "checkbox:true:true",
+            "fly:true",
+            "cracked:true",
+            "shadow:in shadow:true",
+            "bottom:true",
+        ]:
             assert line in log
         page = await s.ok("read_page")
         assert 'textbox "Name" value="Ada Lovelace"' in page  # replaced, not appended
         assert 'checkbox "I agree" checked' in page
+        assert 'checkbox "Fly" checked' in page
         assert 'button "frame clicked:true:localhost"' in page
 
 
