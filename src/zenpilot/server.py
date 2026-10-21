@@ -231,8 +231,10 @@ async def navigate(url: str, tab_id: str | None = None) -> str:
 async def read_page(tab_id: str | None = None) -> str:
     """Outline of the page's visible interactive elements and text.
 
-    Interactive elements get refs like r12 for click and type. Refs expire when you
-    call read_page again or the page navigates.
+    Interactive elements get refs like r12 for click and type. Checkboxes, radios and
+    switches show checked or unchecked. "clickable" marks an element with a pointer
+    cursor but no role, often a custom toggle; its label is usually the text before it.
+    Refs expire when you call read_page again or the page navigates.
     """
     tab = await _tab(tab_id)
     outline = await browser.read_page(tab, _frame_reason)
