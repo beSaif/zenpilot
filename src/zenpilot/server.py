@@ -258,7 +258,8 @@ async def type(ref: str, text: str, submit: bool = False) -> str:
 
     For a <select>, text picks the option starting with it. Date, time, color and range inputs take
     their value format instead: date YYYY-MM-DD, time HH:MM (24-hour), datetime-local
-    YYYY-MM-DDTHH:MM, month YYYY-MM, week YYYY-Www, color #rrggbb. submit=true presses Enter after.
+    YYYY-MM-DDTHH:MM, month YYYY-MM, week YYYY-Www, color #rrggbb. Newlines in text are typed as
+    Shift+Enter, so they don't send chat messages; submit=true presses Enter after.
     """
     await _check_ref(ref)
     return await browser.type(ref, text, submit)

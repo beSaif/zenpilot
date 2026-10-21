@@ -152,6 +152,8 @@ async def test_read_page_outline(site, config):
             ("button", "Sign up"),
             ("textbox", "Shadow input"),
             ("button", "Shadow button"),
+            ("button", "Slotted button"),
+            ("clickable", "Fake button"),
             ("button", "Frame button"),
             ("button", "Bottom button"),
         ]:
@@ -174,10 +176,15 @@ async def test_trusted_input(site, config):
         await s.ok("click", ref=ref(page, "button", "Shadow button"))
         await s.ok("click", ref=ref(page, "button", "Frame button"))
         await s.ok("click", ref=ref(page, "button", "Bottom button"))  # far below the fold
+        await s.ok("click", ref=ref(page, "button", "Slotted button"))
+        await s.ok("click", ref=ref(page, "clickable", "Fake button"))
+        await s.ok("type", ref=ref(page, "textbox", "Bio"), text="line one\nline two")
 
         log = await page_log(s)
-        for line in ["click:true", "select:blue:true", "checkbox:true:true", "shadow:in shadow:true", "bottom:true"]:
+        for line in ["click:true", "select:blue:true", "checkbox:true:true", "shadow:in shadow:true", "bottom:true",
+                     "slotted:true", "fake:true"]:
             assert line in log
+        assert "plain-enter" not in log  # newlines are Shift+Enter, which doesn't send in chat apps
         page = await s.ok("read_page")
         assert 'textbox "Name" value="Ada Lovelace"' in page  # replaced, not appended
         assert 'checkbox "I agree" checked' in page

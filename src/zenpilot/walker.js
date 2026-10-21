@@ -21,7 +21,21 @@
     return s.length > n ? s.slice(0, n - 1) + "…" : s;
   };
   const q = (s) => JSON.stringify(s);
-  const parentOf = (el) => el.parentElement || el.getRootNode().host || null;
+  // Parent in the rendered (flat) tree: slotted elements render inside their slot.
+  const parentOf = (el) => el.assignedSlot || el.parentElement || el.getRootNode().host || null;
+
+  // Elements that only a JS handler makes clickable: the outermost one with a pointer
+  // cursor, neither inside nor around a real control (labels already name their control).
+  const pointer = new Set();
+  const isPointer = (el) => {
+    if (el.tagName === "LABEL" || el === document.body || getComputedStyle(el).cursor !== "pointer") return false;
+    if (el.querySelector(INTERACTIVE)) return false;
+    const p = parentOf(el);
+    if (p instanceof Element && getComputedStyle(p).cursor === "pointer") return false;
+    for (let a = el; a; a = parentOf(a)) if (a.matches(INTERACTIVE)) return false;
+    return true;
+  };
+  const interactive = (el) => el.matches(INTERACTIVE) || pointer.has(el);
 
   // Mark every ancestor of something interesting, so containers without
   // interactive content can be emitted as a single text line.
@@ -29,7 +43,8 @@
   const roots = [document];
   for (let i = 0; i < roots.length; i++) {
     for (const el of roots[i].querySelectorAll("*")) {
-      const interesting = el.shadowRoot || el.matches(INTERACTIVE) || el.tagName === "IFRAME" || el.tagName === "FRAME";
+      if (isPointer(el)) pointer.add(el);
+      const interesting = el.shadowRoot || interactive(el) || el.tagName === "IFRAME" || el.tagName === "FRAME";
       if (el.shadowRoot) roots.push(el.shadowRoot);
       if (!interesting) continue;
       for (let p = parentOf(el); p && !hasInner.has(p); p = parentOf(p)) hasInner.add(p);
@@ -113,12 +128,13 @@
     return [...el.childNodes];
   };
 
-  const walk = (node, depth) => {
+  // named: the name of the control we're inside, whose text needn't be repeated.
+  const walk = (node, depth, named = "") => {
     if (truncated) return;
     if (node.nodeType === 3) {
       const t = clip(node.data, 100);
       const parent = node.parentElement;
-      if (t.length > 1 && !parent?.matches(INTERACTIVE) && !parent?.closest("label")?.control) emit(depth, q(t));
+      if (t.length > 1 && !named.includes(t) && !(parent && interactive(parent)) && !parent?.closest("label")?.control) emit(depth, q(t));
       return;
     }
     if (node.nodeType !== 1) return;
@@ -129,15 +145,15 @@
       if (hasBox(el)) emit(depth, "frame " + q(clip(el.title || el.name || el.src, 60)), null, el.contentWindow);
       return;
     }
-    if (el.matches(INTERACTIVE)) {
+    if (interactive(el)) {
       if (hasBox(el)) emit(depth, describe(el), el);
-      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1);
+      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1, name(el));
       return;
     }
     if (/^H[1-6]$/.test(el.tagName)) {
       const t = clip(el.innerText, 100);
       if (t) emit(depth, el.tagName.toLowerCase() + " " + q(t));
-      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1);
+      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1, named);
       return;
     }
     if (el.tagName === "IMG") {
@@ -150,22 +166,23 @@
       const label = clip(el.getAttribute("aria-label") || "", 40);
       const at = out.length;
       emit(depth, (roleAttr || el.tagName.toLowerCase()) + (label ? " " + q(label) : ""));
-      for (const c of children(el)) walk(c, depth + 1);
+      for (const c of children(el)) walk(c, depth + 1, named);
       if (out.length === at + 1 && !truncated) out.pop(); // drop empty landmarks
       return;
     }
     // Short containers without interactive content become one text line.
     if (el.tagName === "LABEL" && el.control) {
       // Its text is already the control's name; still walk it for nested controls.
-      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth);
+      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth, named);
       return;
     }
-    if (!hasInner.has(el) && (el.children.length === 0 || el.innerText.length <= 200)) {
+    // A slot's innerText is its fallback content, not what's slotted, so always walk it.
+    if (el.tagName !== "SLOT" && !hasInner.has(el) && (el.children.length === 0 || el.innerText.length <= 200)) {
       const t = clip(el.innerText, 100);
-      if (t.length > 1) emit(depth, q(t));
+      if (t.length > 1 && !named.includes(t)) emit(depth, q(t));
       return;
     }
-    for (const c of children(el)) walk(c, depth);
+    for (const c of children(el)) walk(c, depth, named);
   };
 
   walk(document.body || document.documentElement, 0);

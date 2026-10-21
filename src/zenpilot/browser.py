@@ -12,11 +12,13 @@ from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, render, unwrap
 
 # BiDi errors that mean "this node or frame no longer exists".
 STALE_ERRORS = {"no such node", "no such element", "stale element reference", "detached shadow root", "no such frame"}
-ENTER, BACKSPACE = "\ue007", "\ue003"  # WebDriver key codes
-SPECIAL_KEYS = {"\n": ENTER, "\t": "\ue004"}
+ENTER, BACKSPACE, SHIFT = "\ue007", "\ue003", "\ue008"  # WebDriver key codes
+# Shift+Enter makes a line break in chat composers too, where plain Enter would send.
+SPECIAL_KEYS = {"\n": (SHIFT, ENTER), "\t": "\ue004"}
 # Firefox allows one BiDi session. Releasing it when idle lets Claude Desktop and
 # several Claude Code sessions take turns; refs and tab ids expire with it.
 IDLE_RELEASE_SECONDS = 120
+READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
 
 # Scrolls the element into view and reports anything covering its center.
 PREPARE_JS = """(el) => {
@@ -296,7 +298,10 @@ class Browser:
             return next(t for t in tabs if t["active"])
         tab = next((t for t in tabs if t["id"] == tab_id.strip().lower()), None)
         if tab is None:
-            raise BrowserError(f"Unknown tab id '{tab_id}'. Call list_tabs for current ids.")
+            raise BrowserError(
+                f"Unknown tab id '{tab_id}'. Tab ids change when a tab closes or zenpilot reconnects "
+                "after being idle. Call list_tabs for current ids."
+            )
         return tab
 
     async def url_of(self, context: str) -> str:
@@ -362,6 +367,14 @@ class Browser:
                     item.line += " [not readable]"
 
         await collect(tab["context"], 0)
+        # Single-page apps often render after the load event: give a near-empty page a moment.
+        for _ in range(READ_RETRIES):
+            if len(items) > 2:
+                break
+            await asyncio.sleep(0.5)
+            items.clear()
+            truncated = False
+            await collect(tab["context"], 0)
         return render(items, self.refs, tab["id"], truncated)
 
     async def get_text(self, tab: dict, max_chars: int) -> tuple[str, str]:
@@ -436,9 +449,14 @@ class Browser:
             ],
         )
 
-    async def _keys(self, ref: Ref, keys: list[str]) -> None:
+    async def _keys(self, ref: Ref, keys: list[str | tuple[str, ...]]) -> None:
+        """Press keys in order; a tuple is a chord, e.g. (SHIFT, ENTER)."""
         for i in range(0, len(keys), 100):
-            chunk = [{"type": t, "value": k} for k in keys[i : i + 100] for t in ("keyDown", "keyUp")]
+            chunk = []
+            for k in keys[i : i + 100]:
+                k = k if isinstance(k, tuple) else (k,)
+                chunk += [{"type": "keyDown", "value": c} for c in k]
+                chunk += [{"type": "keyUp", "value": c} for c in reversed(k)]
             await self._actions(ref, [{"type": "key", "id": "keyboard", "actions": chunk}])
 
     async def _settle(self, ref: Ref, action) -> str:
