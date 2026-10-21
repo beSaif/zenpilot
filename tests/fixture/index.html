@@ -5,6 +5,10 @@
   body { font-family: sans-serif; margin: 20px; }
   #hidden { display: none; }
   #spacer { height: 2500px; background: linear-gradient(#fff, #ddd); }
+  .switch { cursor: pointer; }
+  .knob, .toggle { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: #ccc; vertical-align: middle; }
+  .switch input:checked + .knob, .toggle.on { background: #4c4; }
+  .toggle { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -28,9 +32,11 @@
   <button id="trusted" onclick="log('click:' + event.isTrusted)">Check trust</button>
   <button id="rerender" onclick="rerender()">Rerender</button>
   <div id="hidden"><button>Invisible button</button></div>
+  <!-- Styled switches: a hidden checkbox under its label, and a div with a JS click handler. -->
+  <label class="switch"><input type="checkbox" hidden onchange="log('fly:' + this.checked)"><span class="knob"></span> Fly</label>
+  <div class="option"><span>Cracked</span> <div class="toggle" id="cracked"></div></div>
   <shadow-widget></shadow-widget>
   <slot-card><button onclick="log('slotted:' + event.isTrusted)">Slotted button</button></slot-card>
-  <div id="fake" style="cursor: pointer"><span>Fake button</span></div>
   <iframe id="same" src="/frame.html" title="Same-origin frame" width="300" height="80"></iframe>
   <iframe id="cross" title="Cross-origin frame" width="300" height="80"></iframe>
   <pre id="log" aria-label="Log"></pre>
@@ -40,6 +46,10 @@
 <script>
   function log(msg) { document.getElementById("log").textContent += msg + "\n"; }
   function rerender() { const m = document.querySelector("main"); m.innerHTML = m.innerHTML; }
+  document.getElementById("cracked").addEventListener("click", (e) => {
+    e.currentTarget.classList.toggle("on");
+    log("cracked:" + e.isTrusted);
+  });
   customElements.define("shadow-widget", class extends HTMLElement {
     constructor() {
       super();
@@ -55,7 +65,6 @@
       this.attachShadow({ mode: "open" }).innerHTML = "<div><slot></slot></div>";
     }
   });
-  document.getElementById("fake").addEventListener("click", (e) => log("fake:" + e.isTrusted));
   // Cross-origin: localhost page embeds 127.0.0.1 (and vice versa).
   const other = location.hostname === "localhost" ? "127.0.0.1" : "localhost";
   document.getElementById("cross").src = `http://${other}:${location.port}/frame.html`;

@@ -15,6 +15,7 @@
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "svg", "math"]);
   const INPUT_ROLES = { checkbox: "checkbox", radio: "radio", button: "button", submit: "button",
     reset: "button", image: "button", range: "slider", search: "searchbox", file: "file" };
+  const TOGGLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"]);
 
   const clip = (s, n) => {
     s = (s || "").replace(/\s+/g, " ").trim();
@@ -23,33 +24,10 @@
   const q = (s) => JSON.stringify(s);
   // Parent in the rendered (flat) tree: slotted elements render inside their slot.
   const parentOf = (el) => el.assignedSlot || el.parentElement || el.getRootNode().host || null;
-
-  // Elements that only a JS handler makes clickable: the outermost one with a pointer
-  // cursor, neither inside nor around a real control (labels already name their control).
-  const pointer = new Set();
-  const isPointer = (el) => {
-    if (el.tagName === "LABEL" || el === document.body || getComputedStyle(el).cursor !== "pointer") return false;
-    if (el.querySelector(INTERACTIVE)) return false;
-    const p = parentOf(el);
-    if (p instanceof Element && getComputedStyle(p).cursor === "pointer") return false;
-    for (let a = el; a; a = parentOf(a)) if (a.matches(INTERACTIVE)) return false;
-    return true;
+  const inControl = (el) => {
+    for (let a = el; a; a = parentOf(a)) if (a.matches(INTERACTIVE)) return true;
+    return false;
   };
-  const interactive = (el) => el.matches(INTERACTIVE) || pointer.has(el);
-
-  // Mark every ancestor of something interesting, so containers without
-  // interactive content can be emitted as a single text line.
-  const hasInner = new Set();
-  const roots = [document];
-  for (let i = 0; i < roots.length; i++) {
-    for (const el of roots[i].querySelectorAll("*")) {
-      if (isPointer(el)) pointer.add(el);
-      const interesting = el.shadowRoot || interactive(el) || el.tagName === "IFRAME" || el.tagName === "FRAME";
-      if (el.shadowRoot) roots.push(el.shadowRoot);
-      if (!interesting) continue;
-      for (let p = parentOf(el); p && !hasInner.has(p); p = parentOf(p)) hasInner.add(p);
-    }
-  }
 
   const rendered = (el) =>
     el.checkVisibility({ checkVisibilityCSS: true }) || getComputedStyle(el).display === "contents";
@@ -57,6 +35,53 @@
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
+  const shown = (el) => rendered(el) && hasBox(el);
+
+  // JS-only controls (a <div> with an addEventListener click handler) match nothing
+  // in INTERACTIVE, but nearly always set cursor: pointer. Cursor is inherited, so
+  // only the element where it starts counts, and only outside and around no other controls.
+  const pointerRoot = (el) => {
+    if (!(el instanceof HTMLElement) || el.tagName === "BODY" || (el.tagName === "LABEL" && el.control)) return false;
+    if (getComputedStyle(el).cursor !== "pointer" || el.querySelector(INTERACTIVE)) return false;
+    const p = parentOf(el);
+    return !(p instanceof Element) || (getComputedStyle(p).cursor !== "pointer" && !inControl(p));
+  };
+
+  // A checkbox or radio hidden behind a styled switch: the ref goes to what the user
+  // actually clicks, its visible label or else the nearest visible ancestor.
+  const standInFor = (el) => {
+    if (el.tagName !== "INPUT" || (el.type !== "checkbox" && el.type !== "radio") || shown(el)) return null;
+    const label = [...el.labels].find(shown);
+    if (label) return label;
+    for (let p = parentOf(el); p && p !== document.body && rendered(p); p = parentOf(p)) if (hasBox(p)) return p;
+    return null;
+  };
+
+  // Mark every ancestor of something interesting, so containers without
+  // interactive content can be emitted as a single text line.
+  const hasInner = new Set();
+  const pointy = new Set();
+  const standIn = new Map();
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) {
+    for (const el of roots[i].querySelectorAll("*")) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+      let interesting = el.shadowRoot || el.tagName === "IFRAME" || el.tagName === "FRAME";
+      if (el.matches(INTERACTIVE)) {
+        interesting = true;
+        const s = standInFor(el);
+        if (s) standIn.set(el, s);
+      } else if (pointerRoot(el)) {
+        interesting = true;
+        pointy.add(el);
+      }
+      if (!interesting) continue;
+      for (let p = parentOf(el); p && !hasInner.has(p); p = parentOf(p)) hasInner.add(p);
+    }
+  }
+  // A switch's styled wrapper is reported as the checkbox it stands in for.
+  for (const s of standIn.values()) pointy.delete(s);
+  const isControl = (el) => el.matches(INTERACTIVE) || pointy.has(el);
 
   const role = (el) => {
     const r = el.getAttribute("role");
@@ -71,22 +96,22 @@
     return el.isContentEditable ? "textbox" : "clickable";
   };
 
-  const name = (el) => {
+  const name = (el, standIn) => {
     let n = el.getAttribute("aria-label");
     const ids = !n && el.getAttribute("aria-labelledby");
     if (ids) n = ids.split(/\s+/).map((id) => el.getRootNode().getElementById?.(id)?.textContent || "").join(" ");
-    if (!n && el.labels?.length) n = el.labels[0].innerText;
+    if (!n && el.labels?.length) n = [...el.labels].map((l) => l.innerText.trim()).find(Boolean);
     if (!n && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) {
       n = el.placeholder || el.title || (["submit", "button", "reset"].includes(el.type) ? el.value : "") || el.alt;
     }
-    if (!n) n = el.innerText || el.title || el.querySelector?.("img[alt]")?.alt || "";
+    if (!n) n = el.innerText || el.title || el.querySelector?.("img[alt]")?.alt || standIn?.innerText || "";
     return clip(n, 80);
   };
 
-  const describe = (el) => {
+  const describe = (el, standIn) => {
     const r = role(el);
     let line = r;
-    const n = name(el);
+    const n = name(el, standIn);
     if (n) line += " " + q(n);
     if (r === "textbox" && el.tagName === "INPUT" && el.type !== "text") line += ` type=${el.type}`;
     if (el.tagName === "SELECT") {
@@ -96,7 +121,10 @@
     } else if (el.isContentEditable && el.innerText.trim() && n !== clip(el.innerText, 80)) {
       line += " value=" + q(clip(el.innerText, 60));
     }
-    if (el.checked || el.getAttribute("aria-checked") === "true") line += " checked";
+    const ariaChecked = el.getAttribute("aria-checked");
+    if (el.indeterminate || ariaChecked === "mixed") line += " mixed";
+    else if (el.checked || ariaChecked === "true") line += " checked";
+    else if (TOGGLE_ROLES.has(r)) line += " unchecked";
     if (el.getAttribute("aria-selected") === "true") line += " selected";
     const exp = el.getAttribute("aria-expanded");
     if (exp) line += exp === "true" ? " expanded" : " collapsed";
@@ -134,18 +162,24 @@
     if (node.nodeType === 3) {
       const t = clip(node.data, 100);
       const parent = node.parentElement;
-      if (t.length > 1 && !named.includes(t) && !(parent && interactive(parent)) && !parent?.closest("label")?.control) emit(depth, q(t));
+      if (t.length > 1 && !named.includes(t) && !(parent && isControl(parent)) && !parent?.closest("label")?.control) emit(depth, q(t));
       return;
     }
     if (node.nodeType !== 1) return;
     const el = node;
-    if (SKIP.has(el.tagName) || el.getAttribute("aria-hidden") === "true" || !rendered(el)) return;
+    if (SKIP.has(el.tagName) || el.getAttribute("aria-hidden") === "true") return;
+    const s = standIn.get(el);
+    if (s) {
+      if (!s.matches(INTERACTIVE)) emit(depth, describe(el, s), s);  // else it reports itself
+      return;
+    }
+    if (!rendered(el)) return;
 
     if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
       if (hasBox(el)) emit(depth, "frame " + q(clip(el.title || el.name || el.src, 60)), null, el.contentWindow);
       return;
     }
-    if (interactive(el)) {
+    if (isControl(el)) {
       if (hasBox(el)) emit(depth, describe(el), el);
       if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1, name(el));
       return;
