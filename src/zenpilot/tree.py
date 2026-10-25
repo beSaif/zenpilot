@@ -4,7 +4,7 @@ import itertools
 from dataclasses import dataclass
 from importlib.resources import files
 
-WALKER_JS = (files("zenpilot") / "walker.js").read_text()
+WALKER_JS = (files("zenpilot") / "walker.js").read_text(encoding="utf-8")
 MAX_ITEMS = 600  # per frame, enforced in the page
 MAX_CHARS = 12_000  # whole output
 
