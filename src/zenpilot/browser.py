@@ -152,6 +152,12 @@ class Browser:
             bidi = BiDi(f"ws://127.0.0.1:{port}/session")
             try:
                 await bidi.connect()
+            except websockets.InvalidStatus as e:  # Zen's remote agent accepts /session; this isn't it
+                raise BrowserError(
+                    f"Something other than Zen is listening on 127.0.0.1:{port} (it answered HTTP "
+                    f"{e.response.status_code}), often Chrome or another app started with remote debugging. "
+                    "Ask the user to quit it, or to set `port` to a free port in zenpilot's config.toml."
+                ) from None
             except (OSError, websockets.InvalidHandshake) as e:
                 raise BrowserError(
                     f"Can't reach Zen's remote agent on 127.0.0.1:{port} ({e}). "
