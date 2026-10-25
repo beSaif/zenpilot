@@ -155,7 +155,11 @@ def test_windows_paths(tmp_path, monkeypatch):
     assert cli._desktop_config() == store / "claude_desktop_config.json"  # the Store build's own copy
     (tmp_path / "Roaming/Claude").mkdir(parents=True)
     (tmp_path / "Roaming/Claude/claude_desktop_config.json").write_text("{}")
-    assert cli._desktop_config() == tmp_path / "Roaming/Claude/claude_desktop_config.json"
+    # A stale %APPDATA% copy loses to the folder the app really runs from (it has "Local State").
+    data = tmp_path / "Local/Claude-Data/claude_pzs8sxrjxfjjc"
+    data.mkdir(parents=True)
+    (data / "Local State").write_text("{}")
+    assert cli._desktop_config() == data / "claude_desktop_config.json"
 
 
 def test_register_desktop_keeps_other_settings(tmp_path):

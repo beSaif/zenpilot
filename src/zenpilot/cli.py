@@ -19,11 +19,19 @@ CLAUDE_CODE_CONFIG = Path("~/.claude.json").expanduser()
 def _desktop_config() -> Path:
     if sys.platform != "win32":
         return Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
-    # The Microsoft Store build may keep its config in its package folder instead.
+    # The Microsoft Store build keeps its data in %LOCALAPPDATA%\Claude-Data\claude_<id> (or, in
+    # older versions, its package folder), and may leave a stale copy behind in %APPDATA%\Claude.
+    # The folder Claude Desktop really uses is the one with its "Local State".
     roaming = Path(os.environ.get("APPDATA", "~/AppData/Roaming")).expanduser() / "Claude"
-    packages = Path(os.environ.get("LOCALAPPDATA", "~/AppData/Local")).expanduser() / "Packages"
-    folders = [roaming, *packages.glob("Claude_*/LocalCache/Roaming/Claude")]
-    folder = next((f for f in folders if (f / "claude_desktop_config.json").exists()), roaming)
+    local = Path(os.environ.get("LOCALAPPDATA", "~/AppData/Local")).expanduser()
+    folders = [
+        *local.glob("Claude-Data/claude_*"),
+        *local.glob("Packages/Claude_*/LocalCache/Roaming/Claude"),
+        roaming,
+    ]
+    live = [f for f in folders if (f / "Local State").exists()]
+    with_config = [f for f in folders if (f / "claude_desktop_config.json").exists()]
+    folder = max(live, key=lambda f: (f / "Local State").stat().st_mtime) if live else next(iter(with_config), roaming)
     return folder / "claude_desktop_config.json"
 
 
