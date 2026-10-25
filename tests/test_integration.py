@@ -1,6 +1,7 @@
 """End to end against a live Zen: MCP stdio client -> zenpilot -> BiDi -> fixture page.
 
 Needs Zen running with --remote-debugging-port 9222 (`zenpilot launch`); skipped otherwise.
+Set ZENPILOT_TEST_PORT to test a Zen on another port.
 Uses its own temp config, so your allowlist and audit log are untouched.
 """
 
@@ -9,9 +10,11 @@ import base64
 import functools
 import http.server
 import json
+import os
 import re
 import shutil
 import socket
+import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,16 +24,17 @@ from mcp import Client, StdioServerParameters
 
 ROOT = Path(__file__).parent.parent
 FIXTURE = ROOT / "tests" / "fixture"
+PORT = int(os.environ.get("ZENPILOT_TEST_PORT", "9222"))
 
 
 def _zen_running() -> bool:
     with socket.socket() as s:
-        return s.connect_ex(("127.0.0.1", 9222)) == 0
+        return s.connect_ex(("127.0.0.1", PORT)) == 0
 
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not _zen_running(), reason="Zen is not listening on 127.0.0.1:9222 (run `zenpilot launch`)"),
+    pytest.mark.skipif(not _zen_running(), reason=f"Zen is not listening on 127.0.0.1:{PORT} (run `zenpilot launch`)"),
 ]
 
 
@@ -56,7 +60,8 @@ def config(tmp_path):
             f"allowlist = {json.dumps(list(allowlist))}\n"
             f"read_only = {'true' if read_only else 'false'}\n"
             "prompts = false\n"
-            f'audit_log = "{tmp_path / "audit.jsonl"}"\n'
+            f"port = {PORT}\n"
+            f"audit_log = {json.dumps(str(tmp_path / 'audit.jsonl'))}\n"  # quoted: Windows paths have backslashes
         )
 
     write()
@@ -88,7 +93,8 @@ class Session:
 
 @asynccontextmanager
 async def zenpilot(config):
-    exe = shutil.which("zenpilot", path=str(ROOT / ".venv" / "bin")) or "zenpilot"
+    scripts = ROOT / ".venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    exe = shutil.which("zenpilot", path=str(scripts)) or "zenpilot"
     params = StdioServerParameters(command=exe, env={"ZENPILOT_CONFIG": str(config.path)})
     async with Client(params) as client:
         yield Session(client)
@@ -291,15 +297,15 @@ async def test_idle_release_lets_another_client_in(monkeypatch):
     monkeypatch.setattr(browser_mod, "IDLE_RELEASE_SECONDS", 0.2)
     first, second = browser_mod.Browser(), browser_mod.Browser()
     try:
-        async with first.session(9222):
+        async with first.session(PORT):
             await first.tabs()
             with pytest.raises(browser_mod.BrowserError, match="already has an active automation session"):
-                await second.connect(9222)
+                await second.connect(PORT)
         await asyncio.sleep(0.5)  # first goes idle and ends its session
-        async with second.session(9222):
+        async with second.session(PORT):
             assert await second.tabs()
         await asyncio.sleep(0.5)
-        async with first.session(9222):  # the first reconnects transparently
+        async with first.session(PORT):  # the first reconnects transparently
             assert await first.tabs()
     finally:
         await first.close()
