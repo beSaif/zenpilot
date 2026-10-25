@@ -293,16 +293,29 @@ async def get_text(tab_id: str | None = None, max_chars: int = 8000) -> str:
     return untrusted(f"# {title}\n\n{text}", tab["url"])
 
 
+async def _next_signal() -> None:
+    """Wait for a request to stop: SIGTERM, SIGINT or SIGHUP, or on Windows Ctrl+C or Ctrl+Break."""
+    if sys.platform != "win32":
+        with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT, signal.SIGHUP) as signals:
+            async for _ in signals:
+                return
+    # asyncio can't add signal handlers on Windows, and there's no SIGHUP. A plain handler
+    # still runs, because the event loop wakes up for signals, so it hands over to the loop.
+    loop, stop = asyncio.get_running_loop(), asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGBREAK):
+        signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+    await stop.wait()
+
+
 async def serve() -> None:
     # Firefox keeps a BiDi session alive after its socket drops, which would lock
     # Zen until restart, so the session is ended explicitly on every way out.
     async def exit_on_signal():
-        with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT, signal.SIGHUP) as signals:
-            async for _ in signals:
-                with anyio.move_on_after(3):
-                    await browser.close()
-                # The stdio transport blocks in a thread read that cancellation can't interrupt.
-                os._exit(0)
+        await _next_signal()
+        with anyio.move_on_after(3):
+            await browser.close()
+        # The stdio transport blocks in a thread read that cancellation can't interrupt.
+        os._exit(0)
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(exit_on_signal)
