@@ -39,6 +39,9 @@ Setup asks which Zen profile to use and which sites Claude may visit. Then it co
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
 Desktop afterwards.
 
+To update, run `uv tool upgrade zenpilot`. On Windows, quit Claude Code and Claude Desktop
+first: Windows won't let uv replace zenpilot while they're running it ("Access is denied").
+
 ## Use it
 
 Just ask Claude: *"order a large pizza with bacon on httpbin.org/forms/post for Sam, then submit it"*.
