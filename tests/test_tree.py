@@ -85,3 +85,8 @@ def test_walker_js_is_a_bare_function_expression():
     # Firefox wraps functionDeclaration in parentheses; a trailing ';' breaks it.
     src = tree.WALKER_JS.strip()
     assert src.endswith("}") and "(maxItems) =>" in src
+
+
+def test_walker_is_read_as_utf8():
+    # Read with the Windows code page, the masked password would reach Claude as "â€¢â€¢â€¢".
+    assert '"•••"' in tree.WALKER_JS and "…" in tree.WALKER_JS

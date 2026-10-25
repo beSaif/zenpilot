@@ -18,11 +18,12 @@ Claude Code, kind of like Claude in Chrome but for Zen.
 There's no browser extension. zenpilot opens Zen with its remote control turned on and
 talks to it directly.
 
-> **Alpha.** Only tested on macOS with Zen 1.23.
+> **Alpha.** Tested on macOS and Windows 11 with Zen 1.23.
 
 ## Install
 
-You need a Mac with Zen in `/Applications`.
+You need Zen on a Mac (in `/Applications`) or a Windows PC (installed normally; for a
+portable Zen, set the `ZENPILOT_ZEN` environment variable to its `zen.exe`).
 
 **Claude Desktop:** download `zenpilot-<version>.mcpb` from the
 [latest release](https://github.com/beSaif/zenpilot/releases/latest) and open it. That's it.
@@ -37,6 +38,9 @@ zenpilot setup
 Setup asks which Zen profile to use and which sites Claude may visit. Then it connects
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
 Desktop afterwards.
+
+To update, run `uv tool upgrade zenpilot`. On Windows, quit Claude Code and Claude Desktop
+first: Windows won't let uv replace zenpilot while they're running it ("Access is denied").
 
 ## Use it
 
@@ -66,7 +70,7 @@ JavaScript.
   allow sites you trust.
 - **Read-only mode.** Set `read_only = true` and Claude can look but not click or type.
 - **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`.
-- **Remote control is open while Zen runs this way.** Other apps on your Mac could connect
+- **Remote control is open while Zen runs this way.** Other apps on your computer could connect
   to it too, and some sites (banks, Cloudflare checks) may think you're a bot. When you're
   done, quit Zen and open it normally.
 
@@ -84,7 +88,8 @@ blocker and so on), which would otherwise happen when remote control is on.
 
 ## Settings
 
-They live in `~/.config/zenpilot/config.toml`, and changes apply right away.
+They live in `~/.config/zenpilot/config.toml` (on Windows, `%USERPROFILE%\.config\zenpilot\config.toml`),
+and changes apply right away.
 
 ```toml
 allowlist = ["localhost", "127.0.0.1"]   # "example.com" covers its subdomains too
@@ -104,6 +109,8 @@ dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 - Zen can be hidden or behind other windows. It still works.
 - Zen loads restored tabs lazily, so Claude only sees an old tab once you've opened it.
 - Stuck? Run `zenpilot doctor`. If Zen says it already has a session after a crash, restart Zen.
+- Chrome started with remote debugging often uses port 9222 too. If `zenpilot doctor` says
+  something other than Zen is listening, set `port` to a free one, like `9333`.
 
 ## Hacking on it
 
@@ -113,6 +120,8 @@ uv sync && uv run zenpilot setup     # points Claude at your clone
 uv run pytest -m "not integration"   # unit tests
 uv run pytest                        # all tests, needs Zen running (zenpilot launch)
 ```
+
+The live tests expect Zen on port 9222; set `ZENPILOT_TEST_PORT` if yours uses another.
 
 Pushing a `v*` tag that matches `pyproject.toml` publishes to PyPI and makes a GitHub
 release with the `.mcpb`.

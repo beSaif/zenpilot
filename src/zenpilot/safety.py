@@ -34,7 +34,7 @@ port = 9222
 # Start Zen on the profile when a tool needs it and nothing listens on the port.
 auto_launch = true
 
-# Ask in a macOS dialog before allowing a blocked site or reopening Zen.
+# Ask in a dialog before allowing a blocked site or reopening Zen.
 # false: blocked sites just fail, and Zen must be started by hand.
 prompts = true
 
@@ -67,8 +67,8 @@ class Config:
 def load_config(path: Path = CONFIG_PATH) -> Config:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(DEFAULT_CONFIG)
-    raw = tomllib.loads(path.read_text())
+        path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))  # -sig: Notepad may add a BOM
     defaults = tomllib.loads(DEFAULT_CONFIG)
     allowlist = raw.get("allowlist", [])
     if not isinstance(allowlist, list) or not all(isinstance(d, str) for d in allowlist):
@@ -95,13 +95,13 @@ def normalize_domain(d: str) -> str:
 def set_config_value(key: str, value, path: Path = CONFIG_PATH) -> None:
     """Set one top-level key in the config file, keeping its comments."""
     load_config(path)  # creates the file and validates it
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8-sig")
     line = f"{key} = {json.dumps(value)}"  # JSON strings, lists and bools are valid TOML here
     pattern = re.compile(rf"(?ms)^{re.escape(key)}\s*=\s*(\[.*?\]|[^\n]*)")
     new = pattern.sub(lambda _: line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
     if tomllib.loads(new).get(key) != value:
         raise ValueError(f"couldn't update {key} in {path}; edit it by hand")
-    path.write_text(new)
+    path.write_text(new, encoding="utf-8")
 
 
 def domain_of(url: str) -> str:
@@ -153,5 +153,5 @@ def audit(cfg: Config, tool: str, params: dict, domain: str | None, ok: bool, ms
     if error:
         record["error"] = error
     cfg.audit_log.parent.mkdir(parents=True, exist_ok=True)
-    with cfg.audit_log.open("a") as f:
+    with cfg.audit_log.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")

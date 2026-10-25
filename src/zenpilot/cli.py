@@ -13,19 +13,51 @@ from . import zen
 from .safety import CONFIG_PATH, load_config, normalize_domain, set_config_value
 
 NAME = "zenpilot"
-DESKTOP_CONFIG = Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
 CLAUDE_CODE_CONFIG = Path("~/.claude.json").expanduser()
+
+
+def _desktop_config() -> Path:
+    if sys.platform != "win32":
+        return Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
+    # The Microsoft Store build keeps its data in %LOCALAPPDATA%\Claude-Data\claude_<id> (or, in
+    # older versions, its package folder), and may leave a stale copy behind in %APPDATA%\Claude.
+    # The folder Claude Desktop really uses is the one with its "Local State".
+    roaming = Path(os.environ.get("APPDATA", "~/AppData/Roaming")).expanduser() / "Claude"
+    local = Path(os.environ.get("LOCALAPPDATA", "~/AppData/Local")).expanduser()
+    folders = [
+        *local.glob("Claude-Data/claude_*"),
+        *local.glob("Packages/Claude_*/LocalCache/Roaming/Claude"),
+        roaming,
+    ]
+    live = [f for f in folders if (f / "Local State").exists()]
+    with_config = [f for f in folders if (f / "claude_desktop_config.json").exists()]
+    folder = max(live, key=lambda f: (f / "Local State").stat().st_mtime) if live else next(iter(with_config), roaming)
+    return folder / "claude_desktop_config.json"
+
+
+DESKTOP_CONFIG = _desktop_config()
+
+
+def _uv_cache() -> Path:
+    if env := os.environ.get("UV_CACHE_DIR"):
+        return Path(env).expanduser()
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", "~/AppData/Local"), "uv", "cache").expanduser()
+    return Path(os.environ.get("XDG_CACHE_HOME", "~/.cache"), "uv").expanduser()
 
 
 def server_command() -> list[str]:
     """The command MCP clients should run to start this zenpilot."""
-    cache = Path(os.environ.get("UV_CACHE_DIR", "~/.cache/uv")).expanduser().resolve()
+    cache = _uv_cache().resolve()
     if Path(sys.prefix).resolve().is_relative_to(cache):  # `uvx zenpilot`: this environment is temporary
         uvx = shutil.which("uvx")
         if not uvx:
             raise zen.ZenError("can't find uvx on PATH")
         return [uvx, NAME]
-    return [os.path.abspath(sys.argv[0])]  # not resolved: uv tool's ~/.local/bin symlink survives upgrades
+    exe = os.path.abspath(sys.argv[0])  # not resolved: uv tool's ~/.local/bin symlink survives upgrades
+    if sys.platform == "win32" and not os.path.splitext(exe)[1] and os.path.isfile(exe + ".exe"):
+        exe += ".exe"  # started as `zenpilot`; clients spawn the launcher by its full name
+    return [exe]
 
 
 def register_claude_code(cmd: list[str]) -> str:
@@ -42,21 +74,21 @@ def register_claude_code(cmd: list[str]) -> str:
 def register_desktop(cmd: list[str], path: Path = DESKTOP_CONFIG) -> str:
     if not path.parent.exists():
         return "· Claude Desktop: not installed, skipped"
-    data = json.loads(path.read_text()) if path.exists() else {}
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     entry = {"command": cmd[0], "args": cmd[1:]}
     servers = data.setdefault("mcpServers", {})
     if servers.get(NAME) == entry:
         return "✓ Claude Desktop: already registered"
     servers[NAME] = entry
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
     return "✓ Claude Desktop: registered; restart Claude Desktop to load it"
 
 
 def _registered(path: Path) -> str | None:
     try:
-        entry = json.loads(path.read_text()).get("mcpServers", {}).get(NAME)
+        entry = json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {}).get(NAME)
     except (OSError, ValueError):
         return None
     return " ".join([entry["command"], *entry.get("args", [])]) if entry else None
@@ -105,8 +137,8 @@ def _pick_profile(current: str | None) -> str:
 
 def setup(args) -> int:
     cfg = load_config()
-    if not zen.ZEN_BIN.exists():
-        raise zen.ZenError(f"Zen isn't installed at {zen.ZEN_APP}. Get it from https://zen-browser.app")
+    if not zen.installed():
+        raise zen.not_installed()
     interactive = _interactive() and not args.profile
     name = args.profile or (_pick_profile(cfg.profile) if interactive else cfg.profile or zen.DEFAULT_PROFILE)
     existed = zen.profile_path(name) is not None
@@ -161,7 +193,7 @@ def doctor(args) -> int:
     modes = [m for m, on in [("read-only", cfg.read_only), ("ALL SITES ALLOWED", cfg.allow_all_sites)] if on]
     print(f"✓ Config {CONFIG_PATH}" + (f" ({', '.join(modes)})" if modes else ""))
     print(f"  allowlist: {', '.join(cfg.allowlist) or '(empty)'}")
-    report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
+    report(zen.installed(), f"Zen installed at {zen.ZEN_APP}", str(zen.not_installed()))
     path = zen.profile_path(cfg.profile) if cfg.profile else None
     if cfg.profile is None:
         print("· No Zen profile chosen yet; you'll be asked on first use, or run `zenpilot setup`")
@@ -224,6 +256,10 @@ def main() -> None:
 
         anyio.run(serve)
         return
+    for stream in (sys.stdout, sys.stderr):
+        # Redirected on Windows, output uses the ANSI code page, which can't encode ✓ and ✗.
+        if stream and (stream.encoding or "").lower().replace("-", "") != "utf8":
+            stream.reconfigure(errors="replace")
     try:
         sys.exit({"setup": setup, "launch": launch, "doctor": doctor, "allow": allow}[command](args))
     except (zen.ZenError, ValueError, OSError, subprocess.SubprocessError) as e:

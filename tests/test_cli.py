@@ -65,13 +65,14 @@ def test_resolve_creates_the_dedicated_profile(zen_dir, monkeypatch):
 
 @pytest.fixture
 def fake_launch(zen_dir, monkeypatch):
-    """launch() with the port, the profile lock, quitting and `open` faked."""
+    """launch() with the port, the profile lock, quitting and starting Zen faked."""
     calls = []
-    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)  # exists, like an installed Zen.app
+    (zen_dir / "zen").touch()
+    monkeypatch.setattr(zen, "ZEN_BIN", zen_dir / "zen")  # exists, like an installed Zen
     monkeypatch.setattr(zen, "port_open", lambda port: bool(calls and calls[-1][0] == "open"))
     monkeypatch.setattr(zen, "holder", lambda path: 123)
     monkeypatch.setattr(zen, "quit_zen", lambda pid, path: calls.append(("quit", pid)))
-    monkeypatch.setattr(zen.subprocess, "run", lambda cmd, **kw: calls.append(("open", cmd[cmd.index("-P") + 1])))
+    monkeypatch.setattr(zen, "_spawn", lambda name, port: calls.append(("open", name)))
     return calls
 
 
@@ -102,6 +103,14 @@ def test_set_config_value_keeps_comments(tmp_path):
     assert cfg.allowlist == ["localhost", "github.com"] and cfg.profile == "Default (release)"
 
 
+def test_config_is_utf8_with_or_without_a_bom(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_bytes('﻿profile = "Perfil padrão"\n'.encode())  # as Notepad may save it
+    assert load_config(path).profile == "Perfil padrão"
+    set_config_value("profile", "Café ☕", path)
+    assert load_config(path).profile == "Café ☕"
+
+
 def test_allow(tmp_path, monkeypatch, capsys):
     path = tmp_path / "config.toml"
     monkeypatch.setattr(cli, "load_config", lambda: load_config(path))
@@ -117,11 +126,40 @@ def test_allow(tmp_path, monkeypatch, capsys):
 
 def test_server_command(tmp_path, monkeypatch):
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setattr(sys, "argv", ["/home/me/.local/bin/zenpilot", "setup"])
-    assert cli.server_command() == ["/home/me/.local/bin/zenpilot"]
+    launcher = str(tmp_path / "bin" / "zenpilot")
+    monkeypatch.setattr(sys, "argv", [launcher, "setup"])
+    assert cli.server_command() == [launcher]
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "cache/archive-v0/abc"))
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/opt/bin/{name}")
     assert cli.server_command() == ["/opt/bin/uvx", "zenpilot"]
+
+
+def test_server_command_names_the_windows_launcher(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    (tmp_path / "zenpilot.exe").touch()
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "zenpilot"), "setup"])
+    assert cli.server_command() == [str(tmp_path / "zenpilot.exe")]
+
+
+def test_windows_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    assert cli._uv_cache() == tmp_path / "Local/uv/cache"
+    assert cli._desktop_config() == tmp_path / "Roaming/Claude/claude_desktop_config.json"
+    store = tmp_path / "Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude"
+    store.mkdir(parents=True)
+    (store / "claude_desktop_config.json").write_text("{}")
+    assert cli._desktop_config() == store / "claude_desktop_config.json"  # the Store build's own copy
+    (tmp_path / "Roaming/Claude").mkdir(parents=True)
+    (tmp_path / "Roaming/Claude/claude_desktop_config.json").write_text("{}")
+    # A stale %APPDATA% copy loses to the folder the app really runs from (it has "Local State").
+    data = tmp_path / "Local/Claude-Data/claude_pzs8sxrjxfjjc"
+    data.mkdir(parents=True)
+    (data / "Local State").write_text("{}")
+    assert cli._desktop_config() == data / "claude_desktop_config.json"
 
 
 def test_register_desktop_keeps_other_settings(tmp_path):

@@ -1,16 +1,51 @@
-"""Finding, preparing and launching Zen profiles (macOS)."""
+"""Finding, preparing and launching Zen profiles (macOS and Windows)."""
 
 import configparser
+import os
 import re
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-ZEN_APP = Path("/Applications/Zen.app")
-ZEN_BIN = ZEN_APP / "Contents/MacOS/zen"
-ZEN_DIR = Path("~/Library/Application Support/zen").expanduser()
+WINDOWS = sys.platform == "win32"
+
+
+def _windows_zen() -> Path:
+    """zen.exe from the registry (where the installer records it), else the usual install folders."""
+    import winreg
+
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\zen.exe") as key:
+                exe = Path(winreg.QueryValue(key, None))
+        except OSError:
+            continue
+        if exe.is_file():
+            return exe
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"), "Zen Browser", "zen.exe"),
+        Path(os.environ.get("LOCALAPPDATA", "~/AppData/Local"), "Programs", "Zen Browser", "zen.exe").expanduser(),
+        Path("~/scoop/apps/zen-browser/current/zen.exe").expanduser(),
+    ]
+    return next((c for c in candidates if c.is_file()), candidates[0])
+
+
+if WINDOWS:
+    # ZENPILOT_ZEN points at zen.exe for portable or otherwise unusual installs.
+    ZEN_BIN = Path(os.environ["ZENPILOT_ZEN"]).expanduser() if os.environ.get("ZENPILOT_ZEN") else _windows_zen()
+    ZEN_APP = ZEN_BIN
+    ZEN_DIR = Path(os.environ.get("APPDATA", "~/AppData/Roaming"), "zen").expanduser()
+    LOCK_FILE = "parent.lock"  # stays on disk after Zen quits; only an open handle means it's in use
+    QUIT_KEYS = "Ctrl+Shift+Q"
+else:
+    ZEN_APP = Path("/Applications/Zen.app")
+    ZEN_BIN = ZEN_APP / "Contents/MacOS/zen"
+    ZEN_DIR = Path("~/Library/Application Support/zen").expanduser()
+    LOCK_FILE = ".parentlock"
+    QUIT_KEYS = "Cmd+Q"
 DEFAULT_PROFILE = "zenpilot"  # the dedicated, logged-out profile zenpilot creates
 
 # With remote debugging, Firefox's remote agent rewrites ~40 prefs for test automation
@@ -19,6 +54,7 @@ SAFE_PREF = ("remote.prefs.recommended", "false")
 # Until Zen's welcome screen is dismissed, pages have a 0x0 viewport.
 WELCOME_PREF = ("zen.welcome-screen.seen", "true")
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flashing up on Windows
 _PREF_RE = re.compile(r'^\s*user_pref\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;', re.M)
 
 
@@ -26,9 +62,17 @@ class ZenError(Exception):
     """A setup or launch failure with a message for the user (or the model)."""
 
 
+def installed() -> bool:
+    return ZEN_BIN.is_file()
+
+
+def not_installed() -> ZenError:
+    return ZenError(f"Zen isn't installed at {ZEN_APP}. Get it from https://zen-browser.app")
+
+
 def _profiles() -> dict[str, Path]:
     ini = configparser.ConfigParser(interpolation=None)
-    ini.read(ZEN_DIR / "profiles.ini")
+    ini.read(ZEN_DIR / "profiles.ini", encoding="utf-8")
     found = {}
     for section in ini.sections():
         s = ini[section]
@@ -50,8 +94,8 @@ def describe(name: str) -> str:
     path = profile_path(name)
     if not path or not (path / "prefs.js").exists():
         return "never used"
-    used = (path / "prefs.js").stat().st_mtime
-    notes = ["open now" if holder(path) else time.strftime("last used %b %-d, %Y", time.localtime(used))]
+    used = time.localtime((path / "prefs.js").stat().st_mtime)
+    notes = ["open now" if holder(path) else f"last used {time.strftime('%b', used)} {used.tm_mday}, {used.tm_year}"]
     if account := prefs(path, "prefs.js").get("services.sync.username"):
         notes.append("signed in as " + account.strip('"'))
     return ", ".join(notes)
@@ -70,8 +114,8 @@ def resolve(name: str) -> Path:
 
 
 def create_profile(name: str) -> Path:
-    if not ZEN_BIN.exists():
-        raise ZenError(f"Zen isn't installed at {ZEN_APP}. Get it from https://zen-browser.app")
+    if not installed():
+        raise not_installed()
     subprocess.run([str(ZEN_BIN), "-CreateProfile", name], check=True, capture_output=True, timeout=60)
     path = profile_path(name)
     if not path:
@@ -82,7 +126,7 @@ def create_profile(name: str) -> Path:
 
 def prefs(profile: Path, file: str = "user.js") -> dict[str, str]:
     try:
-        return dict(_PREF_RE.findall((profile / file).read_text()))
+        return dict(_PREF_RE.findall((profile / file).read_text(encoding="utf-8", errors="replace")))
     except FileNotFoundError:
         return {}
 
@@ -92,7 +136,7 @@ def ensure_prefs(profile: Path, wanted: list[tuple[str, str]]) -> list[str]:
     have = prefs(profile)
     missing = [(k, v) for k, v in wanted if have.get(k) != v]
     if missing:
-        with (profile / "user.js").open("a") as f:
+        with (profile / "user.js").open("a", encoding="utf-8") as f:
             f.write("\n// zenpilot\n" + "".join(f'user_pref("{k}", {v});\n' for k, v in missing))
     return [k for k, _ in missing]
 
@@ -109,22 +153,58 @@ def port_open(port: int) -> bool:
 
 def holder(profile: Path) -> int | None:
     """Pid of the Zen that has the profile open, if any."""
-    lock = profile / ".parentlock"
+    lock = profile / LOCK_FILE
     if not lock.exists():
         return None
-    out = subprocess.run(["lsof", "-t", str(lock)], capture_output=True, text=True).stdout.split()
-    return int(out[0]) if out else None
+    if WINDOWS:
+        from .winproc import file_holders
+
+        pids = file_holders(lock)
+    else:
+        pids = subprocess.run(["lsof", "-t", str(lock)], capture_output=True, text=True).stdout.split()
+    return int(pids[0]) if pids else None
 
 
 def quit_zen(pid: int, profile: Path, timeout: float = 30) -> None:
-    """Quit one Zen instance the way Cmd+Q does, so it saves its session."""
-    js = f"ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid}).terminate"
-    subprocess.run(["osascript", "-l", "JavaScript", "-e", js], capture_output=True, check=True)
+    """Quit one Zen instance gracefully (like Cmd+Q, or closing its windows on Windows), so it saves its session."""
+    if WINDOWS:
+        # Without /F, taskkill asks the windows to close, as clicking their X would.
+        r = subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, creationflags=_NO_WINDOW)
+        if r.returncode:
+            raise ZenError(f"Couldn't ask Zen to quit. Quit it ({QUIT_KEYS}) and retry.")
+    else:
+        js = f"ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid}).terminate"
+        subprocess.run(["osascript", "-l", "JavaScript", "-e", js], capture_output=True, check=True)
     deadline = time.monotonic() + timeout
     while holder(profile):
         if time.monotonic() > deadline:
             raise ZenError("Zen didn't quit. It may be asking you to confirm closing its windows.")
         time.sleep(0.25)
+
+
+def _spawn(name: str, port: int) -> None:
+    """Start a new Zen process on the profile, detached from zenpilot."""
+    args = ["-P", name, "--remote-debugging-port", str(port)]
+    if not WINDOWS:
+        subprocess.run(["open", "-na", str(ZEN_APP), "--args", *args], check=True)
+        return
+    # Detached, without zenpilot's stdio (the MCP pipe), and outside the MCP client's job
+    # if allowed, so Zen keeps running when Claude exits.
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    for extra in (subprocess.CREATE_BREAKAWAY_FROM_JOB, 0):
+        try:
+            subprocess.Popen(
+                [str(ZEN_BIN), "--new-instance", *args],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags | extra,
+                close_fds=True,
+            )
+            return
+        except PermissionError:  # the job doesn't allow breaking away
+            continue
+    raise ZenError(f"Couldn't start {ZEN_BIN}.")
 
 
 def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None = None, timeout: float = 20) -> bool:
@@ -144,15 +224,13 @@ def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None 
         )
         if not (confirm_relaunch and confirm_relaunch(question)):
             raise ZenError(
-                f"Zen profile '{name}' is open without remote debugging. Quit it (Cmd+Q) and retry, "
+                f"Zen profile '{name}' is open without remote debugging. Quit it ({QUIT_KEYS}) and retry, "
                 "or run `zenpilot launch` to reopen it."
             )
         quit_zen(pid, path)
-    if not ZEN_APP.exists():
-        raise ZenError(f"Zen isn't installed at {ZEN_APP}.")
-    subprocess.run(
-        ["open", "-na", str(ZEN_APP), "--args", "-P", name, "--remote-debugging-port", str(port)], check=True
-    )
+    if not installed():
+        raise not_installed()
+    _spawn(name, port)
     deadline = time.monotonic() + timeout
     while not port_open(port):
         if time.monotonic() > deadline:
