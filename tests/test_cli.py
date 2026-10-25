@@ -65,13 +65,14 @@ def test_resolve_creates_the_dedicated_profile(zen_dir, monkeypatch):
 
 @pytest.fixture
 def fake_launch(zen_dir, monkeypatch):
-    """launch() with the port, the profile lock, quitting and `open` faked."""
+    """launch() with the port, the profile lock, quitting and starting Zen faked."""
     calls = []
-    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)  # exists, like an installed Zen.app
+    (zen_dir / "zen").touch()
+    monkeypatch.setattr(zen, "ZEN_BIN", zen_dir / "zen")  # exists, like an installed Zen
     monkeypatch.setattr(zen, "port_open", lambda port: bool(calls and calls[-1][0] == "open"))
     monkeypatch.setattr(zen, "holder", lambda path: 123)
     monkeypatch.setattr(zen, "quit_zen", lambda pid, path: calls.append(("quit", pid)))
-    monkeypatch.setattr(zen.subprocess, "run", lambda cmd, **kw: calls.append(("open", cmd[cmd.index("-P") + 1])))
+    monkeypatch.setattr(zen, "_spawn", lambda name, port: calls.append(("open", name)))
     return calls
 
 
