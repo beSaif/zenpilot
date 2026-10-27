@@ -1,6 +1,7 @@
 """Finding, preparing and launching Zen profiles (macOS)."""
 
 import configparser
+import plistlib
 import re
 import socket
 import subprocess
@@ -162,3 +163,11 @@ def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None 
             )
         time.sleep(0.25)
     return True
+
+
+def version() -> str | None:
+    try:
+        with (ZEN_APP / "Contents/Info.plist").open("rb") as f:
+            return plistlib.load(f).get("CFBundleShortVersionString")
+    except (OSError, plistlib.InvalidFileException):
+        return None

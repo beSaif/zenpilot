@@ -40,6 +40,10 @@ prompts = true
 
 # Every tool call is appended here as one JSON line.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
+
+# A session with failed or slow tool calls, or things Claude couldn't do, leaves a report
+# here. `zenpilot report --issue` turns the latest into a GitHub issue.
+report_dir = "~/.local/state/zenpilot/reports"
 """
 
 # Pages that carry no site content and inherit nothing worth protecting.
@@ -62,6 +66,7 @@ class Config:
     profile: str | None = None  # None: not chosen yet
     auto_launch: bool = True
     prompts: bool = True
+    report_dir: Path = Path("~/.local/state/zenpilot/reports").expanduser()
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -82,6 +87,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         profile=str(raw["profile"]) if "profile" in raw else None,
         auto_launch=raw.get("auto_launch", defaults["auto_launch"]) is True,
         prompts=raw.get("prompts", defaults["prompts"]) is True,
+        report_dir=Path(raw.get("report_dir", defaults["report_dir"])).expanduser(),
     )
 
 

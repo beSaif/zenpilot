@@ -71,6 +71,10 @@
     {
       "name": "get_text",
       "description": "Readable main text of the page (prefers <main> or a single <article>)."
+    },
+    {
+      "name": "report_limitation",
+      "description": "Tell the zenpilot developers about something you couldn't do in Zen with these tools."
     }
   ],
   "compatibility": {

@@ -57,6 +57,7 @@ def config(tmp_path):
             f"read_only = {'true' if read_only else 'false'}\n"
             "prompts = false\n"
             f'audit_log = "{tmp_path / "audit.jsonl"}"\n'
+            f'report_dir = "{tmp_path / "reports"}"\n'
         )
 
     write()
