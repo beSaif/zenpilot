@@ -458,8 +458,21 @@ def _har_target(path: str | None, now: datetime) -> Path:
     return target
 
 
-def _upload_path(path: str) -> str:
-    resolved = Path(path).expanduser().resolve()
+def _upload_roots(cfg) -> tuple[Path, ...]:
+    """Folders file_upload may read from: the default uploads folder plus config upload_dirs."""
+    default = Path.home() / ".local/state/zenpilot/uploads"
+    return (default, *(Path(d).expanduser() for d in cfg.upload_dirs))
+
+
+def _upload_path(path: str, cfg) -> str:
+    resolved = Path(os.path.realpath(Path(path).expanduser()))  # symlinks and ../ resolved before the check
+    roots = tuple(Path(os.path.realpath(r)) for r in _upload_roots(cfg))
+    if not any(resolved.is_relative_to(root) for root in roots):
+        allowed = ", ".join(str(r) for r in roots)
+        raise BrowserError(
+            f"{path} is outside the upload folders ({allowed}). Copy the file into one of them, "
+            f"or add its folder to upload_dirs in {CONFIG_PATH}."
+        )
     if not resolved.is_file():
         raise BrowserError(f"{path} is not a regular file. Give the path of an existing file.")
     return str(resolved)
@@ -669,10 +682,12 @@ async def handle_dialog(accept: bool = True, text: str | None = None, tab_id: st
 
 @tool(mutates=True)
 async def file_upload(ref: str, paths: list[str]) -> str:
-    """Set local files on a file input (ref from read_page). Each path must be an existing regular file."""
+    """Set files on a file input (ref from read_page). Each path must be an existing regular file
+    inside ~/.local/state/zenpilot/uploads or a folder listed in upload_dirs; copy it there first."""
     if not paths:
         raise BrowserError("Give at least one file path.")
-    resolved = [_upload_path(p) for p in paths]
+    cfg = _cfg.get()
+    resolved = [_upload_path(p, cfg) for p in paths]
     await _check_ref(ref)
     return await browser.file_upload(ref, resolved)
 

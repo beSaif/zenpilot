@@ -4,7 +4,7 @@ import json
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -51,6 +51,9 @@ prompts = true
 
 # Every tool call is appended here as one JSON line.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
+
+# file_upload may only send files from ~/.local/state/zenpilot/uploads or from these folders.
+upload_dirs = []
 """
 
 # Pages that carry no site content and inherit nothing worth protecting.
@@ -76,6 +79,7 @@ class Config:
     allow_scripts: bool = False
     show_actions: bool = True
     capture_actions: bool = False
+    upload_dirs: list[str] = field(default_factory=list)  # extra folders file_upload may read from
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -87,6 +91,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     allowlist = raw.get("allowlist", [])
     if not isinstance(allowlist, list) or not all(isinstance(d, str) for d in allowlist):
         raise ValueError(f"{path}: allowlist must be a list of domain strings")
+    upload_dirs = raw.get("upload_dirs", [])
+    if not isinstance(upload_dirs, list) or not all(isinstance(d, str) for d in upload_dirs):
+        raise ValueError(f"{path}: upload_dirs must be a list of folder paths")
     return Config(
         allowlist=[normalize_domain(d) for d in allowlist if d.strip()],
         read_only=bool(raw.get("read_only", False)),
@@ -99,6 +106,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         allow_scripts=raw.get("allow_scripts", defaults["allow_scripts"]) is True,
         show_actions=raw.get("show_actions", defaults["show_actions"]) is not False,
         capture_actions=raw.get("capture_actions", defaults["capture_actions"]) is True,
+        upload_dirs=[d for d in upload_dirs if d.strip()],
     )
 
 

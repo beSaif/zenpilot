@@ -106,7 +106,7 @@
     },
     {
       "name": "file_upload",
-      "description": "Set local files on a file input (ref from read_page)."
+      "description": "Set files on a file input (ref from read_page). Files must sit in ~/.local/state/zenpilot/uploads or a folder listed in upload_dirs."
     },
     {
       "name": "find",

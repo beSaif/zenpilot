@@ -382,13 +382,21 @@ async def test_read_page_reports_open_dialog(zen):
     assert "dialog open: alert hi" in out
 
 
-async def test_file_upload_rejects_directory(zen, tmp_path):
+def allow_upload_dir(monkeypatch, folder):
+    cfg = load_config(folder / "c.toml")
+    cfg.upload_dirs = [str(folder)]
+    monkeypatch.setattr(server, "load_config", lambda *a, **k: cfg)
+
+
+async def test_file_upload_rejects_directory(zen, monkeypatch, tmp_path):
+    allow_upload_dir(monkeypatch, tmp_path)
     with pytest.raises(ToolError, match="regular file"):
         await server.file_upload(ref="r1", paths=[str(tmp_path)])
     assert zen.calls == []
 
 
-async def test_file_upload_passes_resolved_paths(zen, tmp_path):
+async def test_file_upload_passes_resolved_paths(zen, monkeypatch, tmp_path):
+    allow_upload_dir(monkeypatch, tmp_path)
     f = tmp_path / "a.txt"
     f.write_text("x")
     await server.file_upload(ref="r1", paths=[str(f)])

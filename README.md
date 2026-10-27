@@ -103,7 +103,10 @@ dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 allow_scripts = false                    # true: enables the javascript_tool tool
 show_actions = true                      # false: no cursor/click overlay before actions
 capture_actions = false                  # true: save a screenshot per mutating action for run_report
+upload_dirs = []                         # extra folders file_upload may send files from
 ```
+
+`file_upload` only sends files that live under `~/.local/state/zenpilot/uploads` or under a folder in `upload_dirs` (symlinks resolved). Copy a file there first, or add its folder to `upload_dirs`.
 
 Set `ZENPILOT_CONFIG=/path/to/config.toml` to use a different config file.
 
