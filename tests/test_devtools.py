@@ -278,3 +278,17 @@ def test_clear_console_and_network_by_context():
     dt.clear_console()
     dt.clear_network()
     assert dt.console() == [] and dt.requests() == []
+
+
+def test_redact_headers_masks_credential_looking_names():
+    out = redact_headers(
+        [
+            hdr("X-API-Key", "k"),
+            hdr("X-Auth-Token", "t"),
+            hdr("X-CSRF-Token", "c"),
+            hdr("Client-Secret", "s"),
+            hdr("X-Password", "p"),
+            hdr("Content-Type", "text/html"),
+        ]
+    )
+    assert [h["value"] for h in out] == ["[redacted]"] * 5 + ["text/html"]

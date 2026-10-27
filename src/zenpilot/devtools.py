@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlsplit
 
 REDACTED = {"authorization", "cookie", "set-cookie", "proxy-authorization"}
+REDACTED_HINTS = ("token", "secret", "api-key", "apikey", "password", "credential")
 URL_MAX = 120
 
 
@@ -15,7 +16,8 @@ def redact_headers(headers: list[dict]) -> list[dict]:
     for h in headers:
         value = h["value"]
         value = value.get("value", "") if isinstance(value, dict) else value
-        if h["name"].lower() in REDACTED:
+        name = h["name"].lower()
+        if name in REDACTED or any(hint in name for hint in REDACTED_HINTS):
             value = "[redacted]"
         out.append({"name": h["name"], "value": str(value)})
     return out

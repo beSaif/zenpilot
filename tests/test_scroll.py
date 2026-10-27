@@ -80,3 +80,26 @@ async def test_scroll_repeats_are_capped():
     page = FakePage(per_wheel=1)  # Zen moves 1px per wheel: never reaches the target
     await browser_on(page).scroll({"context": "c1"}, "down", 5000)
     assert 1 < len(page.wheels) <= browser_mod.SCROLL_ROUNDS
+
+
+class InnerContainerPage(FakePage):
+    """The window never moves; an inner container (reported after the window slots) scrolls."""
+
+    def __init__(self):
+        super().__init__()
+        self.inner = 0
+
+    async def run(self, ctx, fn, *args, timeout=15):
+        if fn is browser_mod.SCROLL_STATE_JS:
+            return f"{self.x},{self.y},0,{self.inner},0,{self.inner}"
+        return await super().run(ctx, fn, *args, timeout=timeout)
+
+    def _move(self, dx, dy):
+        self.inner = max(0, self.inner + max(-1000, min(1000, dy)))
+
+
+async def test_scroll_in_inner_container_stops_at_requested_amount():
+    page = InnerContainerPage()
+    await browser_on(page).scroll({"context": "c1"}, "down", 500)
+    assert page.inner == 500
+    assert page.wheels == [500]

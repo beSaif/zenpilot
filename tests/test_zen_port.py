@@ -26,3 +26,11 @@ def test_falls_back_to_9222_when_config_unreadable(tmp_path, monkeypatch):
 def test_falls_back_to_9222_when_config_is_invalid(tmp_path, monkeypatch):
     monkeypatch.delenv("ZENPILOT_TEST_PORT", raising=False)
     assert zen_port(write_config(tmp_path / "c.toml", "port = [\n")) == 9222
+
+
+def test_missing_config_gives_default_and_is_not_created(tmp_path, monkeypatch):
+    monkeypatch.delenv("ZENPILOT_TEST_PORT", raising=False)
+    path = tmp_path / "sub" / "c.toml"
+    assert zen_port(path) == 9222
+    assert not path.exists()
+    assert not path.parent.exists()

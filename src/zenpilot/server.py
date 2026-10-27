@@ -763,6 +763,11 @@ async def network_route(
         raise BrowserError("The URL must start with http:// or https://.")
     if action not in ROUTE_ACTIONS:
         raise BrowserError(f"action must be abort or respond, got {action!r}.")
+    if action == "respond" and not _cfg.get().allow_scripts:
+        raise Blocked(
+            f"Mocking responses can inject scripts into a page, so it needs allow_scripts = true in {CONFIG_PATH}. "
+            "Ask the user to set it, then retry."
+        )
     _domain.set(domain_of(url_pattern))
     check_url(url_pattern, _cfg.get())
     return await browser.network_route(url_pattern, action, status, body, content_type)

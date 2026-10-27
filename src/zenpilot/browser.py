@@ -154,7 +154,13 @@ FORM_INPUT_JS = """(el, v) => {
   if (el.tagName === "INPUT" && el.type === "file") return ["unsupported", "input type=file"];
   if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
     const proto = el.tagName === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
+    const set = Object.getOwnPropertyDescriptor(proto, "value").set;
+    const old = el.value;
+    set.call(el, v);
+    if (v && !el.value) {  // invalid for this type (e.g. a date): the browser cleared it, so put the old value back
+      set.call(el, old);
+      return ["invalid", el.type];
+    }
     fire();
     return ["ok", el.value];
   }
@@ -328,6 +334,7 @@ class Browser:
                     ) from None
                 raise
             bidi.on("browsingContext.userPromptOpened", self._on_prompt)
+            bidi.on("browsingContext.userPromptClosed", self._on_prompt_closed)
             try:
                 await bidi.send(
                     "session.subscribe",
@@ -337,25 +344,33 @@ class Browser:
                             "browsingContext.load",
                             "browsingContext.contextCreated",
                             "browsingContext.userPromptOpened",
+                            "browsingContext.userPromptClosed",
                         ]
                     },
                 )
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
-            await self._enable_devtools(bidi)
-            bidi.on("network.beforeRequestSent", lambda p, b=bidi: self._answer_route(b, p))
-            for rid, route in list(self._routes.items()):  # intercepts die with the session
-                try:
-                    route["intercept"] = await self._add_intercept(bidi, route["url"])
-                except BrowserError as e:
-                    del self._routes[rid]
-                    log.warning("route %s dropped on reconnect: %s", rid, e)
+            try:
+                await self._enable_devtools(bidi)
+                bidi.on("network.beforeRequestSent", lambda p, b=bidi: self._answer_route(b, p))
+                for rid, route in list(self._routes.items()):  # intercepts die with the session
+                    try:
+                        route["intercept"] = await self._add_intercept(bidi, route["url"])
+                    except BrowserError as e:
+                        del self._routes[rid]
+                        log.warning("route %s dropped on reconnect: %s", rid, e)
+            except BaseException:
+                await bidi.close()  # don't leave an orphaned session behind
+                raise
             self.zen_version = ((session or {}).get("capabilities") or {}).get("browserVersion")
             self._bidi = bidi
 
     def _on_prompt(self, params: dict) -> None:
         self._prompts[params["context"]] = (params.get("type", ""), params.get("message", ""))
+
+    def _on_prompt_closed(self, params: dict) -> None:
+        self._prompts.pop(params.get("context"), None)
 
     async def _enable_devtools(self, bidi: BiDi) -> None:
         """Buffer console and network events. Best effort: on failure the browser stays usable without them."""
@@ -742,6 +757,8 @@ class Browser:
             raise BrowserError(f"Ref {key} is disabled or read-only.")
         if status == "nooption":
             raise BrowserError(f"No option of {key} matches {value!r}. Options: {detail}.")
+        if status == "invalid":
+            raise BrowserError(f"{value!r} is not a valid value for a {detail} input ({key}).")
         if status == "badbool":
             raise BrowserError(f"Use true or false for a checkbox, not {value!r}.")
         if status == "unsupported":
@@ -964,15 +981,22 @@ class Browser:
         w, h, *_ = await self.run(ctx, SCROLL_INFO_JS)
         sx, sy = {"down": (0, 1), "up": (0, -1), "right": (1, 0), "left": (-1, 0)}[direction]
         state = await self.run(ctx, SCROLL_STATE_JS)
-        x, y = (float(v) for v in state.split(",")[:2])
-        target_x, target_y = x + sx * amount, y + sy * amount
-        # Zen applies only part of one wheel action, so repeat until the target is reached,
-        # the page stops moving, or the round cap is hit.
+        start = [float(v) for v in state.split(",")]
+        axis = 0 if sx else 1  # even slots of the state are x offsets, odd slots y
+        sign = sx or sy
+
+        def moved(now: str) -> float:
+            # Window and documentElement repeat the same offset, so take the largest move, not the sum.
+            cur = [float(v) for v in now.split(",")]
+            return max((sign * (c - s0) for c, s0 in list(zip(cur, start, strict=False))[axis::2]), default=0.0)
+
+        # Zen applies only part of one wheel action, so repeat until the amount is covered,
+        # the page stops moving, or the round cap is hit. Progress counts the inner containers too.
         for round_ in range(SCROLL_ROUNDS):
-            x, y = (float(v) for v in state.split(",")[:2])
-            dx, dy = round(target_x - x), round(target_y - y)
-            if dx == 0 and dy == 0:
+            remaining = round(amount - moved(state))
+            if remaining <= 0:
                 break
+            dx, dy = sx * remaining, sy * remaining
             new = await self._wheel(ctx, w, h, dx, dy, state)
             if new == state:
                 if round_ == 0:  # the wheel did nothing: scroll the nearest scrollable ancestor instead

@@ -10,6 +10,8 @@ DEFAULT_PORT = 9222
 def zen_port(path=CONFIG_PATH) -> int:
     if env := os.environ.get("ZENPILOT_TEST_PORT"):
         return int(env)
+    if not path.exists():  # load_config would create the user's config file
+        return DEFAULT_PORT
     try:
         return load_config(path).port
     except (OSError, ValueError):

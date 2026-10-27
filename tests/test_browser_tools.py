@@ -216,7 +216,16 @@ async def test_network_route_is_blocked_in_read_only_mode(fake):
         await server.network_route(url_pattern="http://localhost/x")
 
 
+async def test_network_route_respond_needs_allow_scripts(fake):
+    with pytest.raises(ToolError, match="allow_scripts"):
+        await server.network_route(url_pattern="http://localhost/x", action="respond", body="x")
+    assert fake.calls == []
+    await server.network_route(url_pattern="http://localhost/x", action="abort")
+    assert fake.calls[-1][0] == "route"
+
+
 async def test_network_route_redacts_body_in_audit(fake, tmp_path):
+    fake.cfg.allow_scripts = True
     await server.network_route(url_pattern="http://localhost/x", action="respond", body="secret-body")
     assert fake.calls[-1] == ("route", "http://localhost/x", "respond", 200, "secret-body", "application/json")
     assert last_audit(tmp_path)["params"]["body"] == {"chars": 11}
@@ -360,6 +369,7 @@ async def test_form_input_runs_setter_script(fake_bidi):
         ("nooption", "Brazil, Chile", "Peru", "No option of r1 matches 'Peru'. Options: Brazil, Chile"),
         ("badbool", "", "yes", "Use true or false"),
         ("unsupported", "input type=file", "x", "can't set"),
+        ("invalid", "date", "not-a-date", "not a valid value for a date input"),
     ],
 )
 async def test_form_input_explains_refusals(fake_bidi, status, detail, value, message):
@@ -570,8 +580,21 @@ async def test_network_route_rejects_host_not_on_allowlist(fake):
 
 
 async def test_network_route_body_json_string_through_mcp_call(fake):
+    fake.cfg.allow_scripts = True
     await server.mcp.call_tool(
         "network_route",
         {"url_pattern": "http://localhost/x", "action": "respond", "body": '{"ok": true}'},
     )
     assert fake.calls[-1] == ("route", "http://localhost/x", "respond", 200, '{"ok": true}', "application/json")
+
+
+async def test_connect_closes_session_when_route_restore_fails(fake_bidi):
+    b, _ = await connected(fake_bidi)
+    FakeBiDi.replies["network.addIntercept"] = {"intercept": "i1"}
+    await b.network_route("http://localhost/data.json", "abort", 200, None, "application/json")
+    await b.close()
+    fake_bidi.fail = lambda m, p: TimeoutError() if m == "network.addIntercept" else None
+    with pytest.raises(TimeoutError):
+        await b.connect(9222)
+    assert fake_bidi.instances[1].connected is False
+    assert not b.connected

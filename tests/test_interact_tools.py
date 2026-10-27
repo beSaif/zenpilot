@@ -178,6 +178,14 @@ async def test_prompt_event_is_tracked_and_cleared_on_handle(fake_bidi):
     assert b.dialog_note("c1") is None
 
 
+async def test_prompt_closed_event_clears_the_dialog(fake_bidi):
+    b, bidi = await connected_browser(fake_bidi)
+    assert "browsingContext.userPromptClosed" in bidi.sent[0][1]["events"]
+    bidi.emit("browsingContext.userPromptOpened", {"context": "c1", "type": "alert", "message": "hi"})
+    bidi.emit("browsingContext.userPromptClosed", {"context": "c1", "accepted": True})
+    assert b.dialog_note("c1") is None
+
+
 async def test_handle_dialog_sends_prompt_text(fake_bidi):
     b, bidi = await connected_browser(fake_bidi)
     await b.handle_dialog({"context": "c1"}, True, "answer")
