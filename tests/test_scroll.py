@@ -103,3 +103,22 @@ async def test_scroll_in_inner_container_stops_at_requested_amount():
     await browser_on(page).scroll({"context": "c1"}, "down", 500)
     assert page.inner == 500
     assert page.wheels == [500]
+
+
+class ShiftingChainPage(FakePage):
+    """The element under the viewport center changes branch after the first wheel, so the chain length changes."""
+
+    async def run(self, ctx, fn, *args, timeout=15):
+        if fn is browser_mod.SCROLL_STATE_JS:
+            if self.y <= 3000:  # [window, leaf, body, html]
+                return f"{self.x},{self.y},0,0,0,0,0,{self.y}"
+            return f"{self.x},{self.y},0,0,0,{self.y}"  # [window, child of html, html]
+        return await super().run(ctx, fn, *args, timeout=timeout)
+
+
+async def test_scroll_with_changing_ancestor_chain_pairs_shared_ancestors():
+    page = ShiftingChainPage(height=10000)
+    page.y = 3000
+    await browser_on(page).scroll({"context": "c1"}, "down", 2500)
+    assert page.y == 5500
+    assert len(page.wheels) == 3  # 1000 + 1000 + 500, not stopped early by a false 4000 px reading

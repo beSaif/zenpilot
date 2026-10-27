@@ -720,13 +720,16 @@ class Browser:
         params: dict = {"context": tab["context"], "accept": accept}
         if text is not None:
             params["userText"] = text
+        # userPromptClosed can arrive before the response and drop the entry, so read it first.
+        prompt = self._prompts.get(tab["context"], ("", ""))
         try:
             await self.call("browsingContext.handleUserPrompt", params)
         except BiDiError as e:
             if e.error == "no such alert":
                 raise BrowserError("No dialog is open in this tab.") from None
             raise
-        return self._prompts.pop(tab["context"], ("", ""))
+        self._prompts.pop(tab["context"], None)
+        return prompt
 
     async def file_upload(self, key: str, paths: list[str]) -> str:
         """Set the files of an <input type=file> by ref. Paths must already be checked."""
@@ -981,14 +984,20 @@ class Browser:
         w, h, *_ = await self.run(ctx, SCROLL_INFO_JS)
         sx, sy = {"down": (0, 1), "up": (0, -1), "right": (1, 0), "left": (-1, 0)}[direction]
         state = await self.run(ctx, SCROLL_STATE_JS)
-        start = [float(v) for v in state.split(",")]
         axis = 0 if sx else 1  # even slots of the state are x offsets, odd slots y
         sign = sx or sy
 
+        def offsets(s: str) -> list[float]:
+            # Window first, then ancestors from the root down. Root-side alignment keeps shared
+            # ancestors paired when the element under the viewport center changes between rounds.
+            v = [float(x) for x in s.split(",")][axis::2]
+            return [v[0], *reversed(v[1:])]
+
+        start = offsets(state)
+
         def moved(now: str) -> float:
             # Window and documentElement repeat the same offset, so take the largest move, not the sum.
-            cur = [float(v) for v in now.split(",")]
-            return max((sign * (c - s0) for c, s0 in list(zip(cur, start, strict=False))[axis::2]), default=0.0)
+            return max((sign * (c - s0) for c, s0 in zip(offsets(now), start, strict=False)), default=0.0)
 
         # Zen applies only part of one wheel action, so repeat until the amount is covered,
         # the page stops moving, or the round cap is hit. Progress counts the inner containers too.

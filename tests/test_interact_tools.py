@@ -462,3 +462,19 @@ def test_allow_scripts_defaults_off_and_parses(tmp_path):
     assert load_config(path).allow_scripts is True
     path.write_text('allow_scripts = "yes"\n')
     assert load_config(path).allow_scripts is False
+
+
+async def test_handle_dialog_returns_metadata_when_closed_event_arrives_first(fake_bidi):
+    # The userPromptClosed event can reach us before the handleUserPrompt response; the metadata must survive it.
+    b, bidi = await connected_browser(fake_bidi)
+    bidi.emit("browsingContext.userPromptOpened", {"context": "c1", "type": "prompt", "message": "name?"})
+    real_send = bidi.send
+
+    async def send_with_closed_first(method, params=None, timeout=30):
+        if method == "browsingContext.handleUserPrompt":
+            bidi.emit("browsingContext.userPromptClosed", {"context": "c1", "accepted": True})
+        return await real_send(method, params, timeout)
+
+    bidi.send = send_with_closed_first
+    assert await b.handle_dialog({"context": "c1"}, True, "ana") == ("prompt", "name?")
+    assert b.dialog_note("c1") is None
