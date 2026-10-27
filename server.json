@@ -6,12 +6,12 @@
     "url": "https://github.com/beSaif/zenpilot",
     "source": "github"
   },
-  "version": "0.2.4",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "zenpilot",
-      "version": "0.2.4",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       }

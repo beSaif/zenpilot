@@ -1,6 +1,6 @@
 # Claude Desktop extension: Claude Desktop installs these dependencies with uv and runs server.py.
 [project]
 name = "zenpilot-mcpb"
-version = "0.2.4"
+version = "0.3.0"
 requires-python = ">=3.12"
-dependencies = ["zenpilot==0.2.4"]
+dependencies = ["zenpilot==0.3.0"]
