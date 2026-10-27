@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import report as reports
 from . import zen
 from .safety import CONFIG_PATH, load_config, normalize_domain, set_config_value
 
@@ -200,6 +201,29 @@ def allow(args) -> int:
     return 0
 
 
+def report(args) -> int:
+    saved = reports.reports(load_config().report_dir)
+    if args.list:
+        for path in saved:
+            print(path)
+        return 0
+    path = Path(args.file).expanduser() if args.file else next(iter(saved), None)
+    if path is None:
+        print("No session reports yet. zenpilot writes one when Claude runs into trouble.")
+        return 0
+    text = path.read_text()
+    if not args.issue:
+        print(f"{path}\n\n{text}", end="")
+        return 0
+    url, fits = reports.issue_url(text)
+    if not fits:
+        subprocess.run(["pbcopy"], input=text, text=True, check=True)
+        print("The report is too long for a link, so it's on your clipboard: paste it into the issue.")
+    print(f"Opening a new GitHub issue for {path}. Check it for anything private before you submit.")
+    subprocess.run(["open", url], check=True)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog=NAME, description="With no command, runs the MCP server that Claude starts.")
     parser.add_argument("--check", action="store_true", help=argparse.SUPPRESS)  # old name for doctor
@@ -214,6 +238,10 @@ def main() -> None:
     p = sub.add_parser("allow", help="add sites to the allowlist; with no sites, show it")
     p.add_argument("domains", nargs="*", metavar="domain")
     p.add_argument("--remove", action="store_true", help="remove the sites instead")
+    p = sub.add_parser("report", help="show the latest session report of what Claude couldn't do")
+    p.add_argument("file", nargs="?", help="a report to use instead of the latest")
+    p.add_argument("--issue", action="store_true", help="open a GitHub issue prefilled with it")
+    p.add_argument("--list", action="store_true", help="list all reports, newest first")
     args = parser.parse_args()
 
     command = "doctor" if args.check else args.command
@@ -225,7 +253,8 @@ def main() -> None:
         anyio.run(serve)
         return
     try:
-        sys.exit({"setup": setup, "launch": launch, "doctor": doctor, "allow": allow}[command](args))
+        commands = {"setup": setup, "launch": launch, "doctor": doctor, "allow": allow, "report": report}
+        sys.exit(commands[command](args))
     except (zen.ZenError, ValueError, OSError, subprocess.SubprocessError) as e:
         sys.exit(f"zenpilot: {e}")
     except (EOFError, KeyboardInterrupt):

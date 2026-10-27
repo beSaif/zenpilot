@@ -57,6 +57,21 @@ Claude can open, switch and close tabs, go to a URL, read the page, click, type,
 take screenshots. It can't touch cookies, passwords or downloads, and it can't run its own
 JavaScript.
 
+## When it gets stuck
+
+zenpilot is far from perfect, and every site is different. When Claude can't do something
+(say, upload a file), it notes what it tried. zenpilot also notes tool calls that failed or
+took over 5 seconds. If anything went wrong, a notification at the end of the session points
+you to a report in `~/.local/state/zenpilot/reports/`.
+
+```sh
+zenpilot report           # show the latest report
+zenpilot report --issue   # open a GitHub issue with it filled in
+```
+
+What you typed and the pages' text stay out of it, Claude is asked to leave out personal data,
+and URLs lose their `?query` part. Still, read it before you submit.
+
 ## Staying safe
 
 - **Allowlist.** Claude only works on sites you've allowed. Add one with
@@ -81,6 +96,7 @@ blocker and so on), which would otherwise happen when remote control is on.
 | `zenpilot allow [site...]` | Allow sites. `--remove` takes them off. No sites lists them. |
 | `zenpilot launch` | Open Zen with remote control on |
 | `zenpilot doctor` | Check your setup and say how to fix anything that's broken |
+| `zenpilot report` | Show the latest session report. `--issue` files it on GitHub, `--list` lists them all. |
 
 ## Settings
 
@@ -94,6 +110,7 @@ auto_launch = true                       # open Zen when Claude needs it
 prompts = true                           # show the popups above
 port = 9222
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
+report_dir = "~/.local/state/zenpilot/reports"
 dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 ```
 
