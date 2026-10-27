@@ -65,6 +65,7 @@
   const roots = [document];
   for (let i = 0; i < roots.length; i++) {
     for (const el of roots[i].querySelectorAll("*")) {
+      if (el.id === "__zenpilot_overlay") continue;  // action overlay, drawn by overlay.js
       if (el.shadowRoot) roots.push(el.shadowRoot);
       let interesting = el.shadowRoot || el.tagName === "IFRAME" || el.tagName === "FRAME";
       if (el.matches(INTERACTIVE)) {
@@ -167,7 +168,7 @@
     }
     if (node.nodeType !== 1) return;
     const el = node;
-    if (SKIP.has(el.tagName) || el.getAttribute("aria-hidden") === "true") return;
+    if (SKIP.has(el.tagName) || el.id === "__zenpilot_overlay" || el.getAttribute("aria-hidden") === "true") return;
     const s = standIn.get(el);
     if (s) {
       if (!s.matches(INTERACTIVE)) emit(depth, describe(el, s), s);  // else it reports itself

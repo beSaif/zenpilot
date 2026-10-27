@@ -3,9 +3,12 @@
 import asyncio
 import itertools
 import json
+import logging
 from collections.abc import Callable
 
 import websockets
+
+log = logging.getLogger(__name__)
 
 
 class BiDiError(Exception):
@@ -24,6 +27,7 @@ class BiDi:
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._listeners: list[tuple[str, Callable[[dict], bool], asyncio.Future]] = []
+        self._handlers: dict[str, list[Callable[[dict], None]]] = {}
         self._reader: asyncio.Task | None = None
 
     @property
@@ -73,6 +77,17 @@ class BiDi:
         self._listeners.append((method, predicate, fut))
         return fut
 
+    def on(self, method: str, callback: Callable[[dict], None]) -> Callable[[], None]:
+        """Call `callback(params)` for every event with this method. Returns an unsubscribe function."""
+        self._handlers.setdefault(method, []).append(callback)
+
+        def unsubscribe() -> None:
+            handlers = self._handlers.get(method, [])
+            if callback in handlers:
+                handlers.remove(callback)
+
+        return unsubscribe
+
     async def _read_loop(self) -> None:
         try:
             async for raw in self._ws:
@@ -85,10 +100,16 @@ class BiDi:
                 if not fut.done():
                     fut.set_exception(err)
             self._listeners.clear()
+            self._handlers.clear()
 
     def _dispatch(self, msg: dict) -> None:
         if msg.get("type") == "event":
             method, params = msg["method"], msg["params"]
+            for callback in list(self._handlers.get(method, [])):
+                try:
+                    callback(params)
+                except Exception:
+                    log.exception("BiDi handler for %s failed", method)
             keep = []
             for listener in self._listeners:
                 m, pred, fut = listener

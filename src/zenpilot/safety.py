@@ -17,8 +17,19 @@ DEFAULT_CONFIG = """\
 # Sites zenpilot may read or act on. "example.com" also covers its subdomains.
 allowlist = ["localhost", "127.0.0.1"]
 
-# true disables click, type, navigate, new_tab and close_tab.
+# true disables click, type, navigate, new_tab, close_tab, press_key, file_upload and the other changes.
 read_only = false
+
+# true lets javascript_tool run JavaScript that Claude writes inside a page. Off by default:
+# such a script can read and change anything in a page you're logged into.
+allow_scripts = false
+
+# true draws a cursor, click ripple and highlight in the page before each click/type/hover
+# so you can watch what Claude does. Hidden from what Claude reads.
+show_actions = true
+
+# true saves a screenshot after every action Claude takes, for run_report.
+capture_actions = false
 
 # DANGER: true ignores the allowlist and lets zenpilot read and act on any http(s)
 # site, including ones you're logged into. Pages can contain prompt injection.
@@ -62,6 +73,9 @@ class Config:
     profile: str | None = None  # None: not chosen yet
     auto_launch: bool = True
     prompts: bool = True
+    allow_scripts: bool = False
+    show_actions: bool = True
+    capture_actions: bool = False
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -82,6 +96,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         profile=str(raw["profile"]) if "profile" in raw else None,
         auto_launch=raw.get("auto_launch", defaults["auto_launch"]) is True,
         prompts=raw.get("prompts", defaults["prompts"]) is True,
+        allow_scripts=raw.get("allow_scripts", defaults["allow_scripts"]) is True,
+        show_actions=raw.get("show_actions", defaults["show_actions"]) is not False,
+        capture_actions=raw.get("capture_actions", defaults["capture_actions"]) is True,
     )
 
 

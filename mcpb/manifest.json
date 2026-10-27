@@ -71,6 +71,78 @@
     {
       "name": "get_text",
       "description": "Readable main text of the page (prefers <main> or a single <article>)."
+    },
+    {
+      "name": "read_console_messages",
+      "description": "Console messages a tab logged since zenpilot started watching, oldest first."
+    },
+    {
+      "name": "read_network_requests",
+      "description": "Network requests a tab made since zenpilot started watching, oldest first."
+    },
+    {
+      "name": "network_request",
+      "description": "Headers (sensitive ones redacted) and response body of one request from read_network_requests."
+    },
+    {
+      "name": "har_export",
+      "description": "Save a tab's recorded requests as a HAR 1.2 file."
+    },
+    {
+      "name": "javascript_tool",
+      "description": "Run JavaScript in a tab's page and return the result. Disabled unless allow_scripts is true in config."
+    },
+    {
+      "name": "press_key",
+      "description": "Press keys in a tab's focused element, e.g. Enter, Tab, ctrl+a."
+    },
+    {
+      "name": "resize_window",
+      "description": "Set a tab's viewport size in CSS pixels."
+    },
+    {
+      "name": "handle_dialog",
+      "description": "Accept or dismiss the JavaScript dialog (alert, confirm, prompt) open in a tab."
+    },
+    {
+      "name": "file_upload",
+      "description": "Set local files on a file input (ref from read_page)."
+    },
+    {
+      "name": "find",
+      "description": "Interactive elements whose line contains query (case-insensitive), with refs for click, type or form_input."
+    },
+    {
+      "name": "form_input",
+      "description": "Set a select (option value or visible text), checkbox or radio (\"true\"/\"false\"), or text input/textarea by ref."
+    },
+    {
+      "name": "hover",
+      "description": "Move the mouse over an element by ref, to open menus or show tooltips."
+    },
+    {
+      "name": "wait_for",
+      "description": "Wait until all given hold: text is visible on the page, the ref's element is visible, URL has url_contains."
+    },
+    {
+      "name": "network_route",
+      "description": "Fail (abort) or answer with a mock (respond) every request to an exact URL, in all tabs, until network_unroute."
+    },
+    {
+      "name": "network_unroute",
+      "description": "Remove one route from network_route by its id, or all routes when route_id is omitted."
+    },
+    {
+      "name": "browser_batch",
+      "description": "Run several tools in order in one call. Each step is {\"tool\": name, \"args\": {...}}."
+    },
+    {
+      "name": "action_history",
+      "description": "Recent actions in this run, oldest first: tool, ok or ERR, duration, arguments (redacted) and result line."
+    },
+    {
+      "name": "run_report",
+      "description": "Write this run's report: report.html and report.json with the actions, console and network, plus run.har."
     }
   ],
   "compatibility": {

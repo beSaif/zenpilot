@@ -5,3 +5,4 @@ __pycache__/
 dist/
 .DS_Store
 mcpb/uv.lock
+.ruff_cache/

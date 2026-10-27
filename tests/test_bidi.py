@@ -138,3 +138,58 @@ async def test_close_ends_session(connect):
     await client.close()
     assert sock.sent[-1]["method"] == "session.end"
     assert sock.closed
+
+
+async def test_on_handler_called_for_every_matching_event(connect):
+    client, sock = await connect()
+    seen = []
+    client.on("browsingContext.load", seen.append)
+    sock.push({"type": "event", "method": "browsingContext.load", "params": {"context": "A"}})
+    sock.push({"type": "event", "method": "browsingContext.load", "params": {"context": "B"}})
+    await asyncio.sleep(0.01)
+    assert seen == [{"context": "A"}, {"context": "B"}]
+
+
+async def test_on_handler_ignores_other_methods(connect):
+    client, sock = await connect()
+    seen = []
+    client.on("browsingContext.load", seen.append)
+    sock.push({"type": "event", "method": "browsingContext.domContentLoaded", "params": {}})
+    await asyncio.sleep(0.01)
+    assert seen == []
+
+
+async def test_unsubscribe_stops_handler(connect):
+    client, sock = await connect()
+    seen = []
+    unsubscribe = client.on("browsingContext.load", seen.append)
+    sock.push({"type": "event", "method": "browsingContext.load", "params": {"n": 1}})
+    await asyncio.sleep(0.01)
+    unsubscribe()
+    sock.push({"type": "event", "method": "browsingContext.load", "params": {"n": 2}})
+    await asyncio.sleep(0.01)
+    assert seen == [{"n": 1}]
+
+
+async def test_raising_handler_does_not_block_expect_or_other_handlers(connect):
+    client, sock = await connect()
+    seen = []
+
+    def boom(params):
+        raise RuntimeError("handler bug")
+
+    client.on("browsingContext.load", boom)
+    client.on("browsingContext.load", seen.append)
+    fut = client.expect("browsingContext.load")
+    sock.push({"type": "event", "method": "browsingContext.load", "params": {"context": "A"}})
+    assert (await asyncio.wait_for(fut, 1)) == {"context": "A"}
+    assert seen == [{"context": "A"}]
+
+
+async def test_handlers_cleared_when_connection_ends(connect):
+    client, sock = await connect()
+    seen = []
+    client.on("browsingContext.load", seen.append)
+    sock.drop()
+    await asyncio.sleep(0.01)
+    assert client._handlers == {}

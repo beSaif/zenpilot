@@ -55,7 +55,12 @@ Pressing Enter always picks the safe answer.
 
 Claude can open, switch and close tabs, go to a URL, read the page, click, type, scroll and
 take screenshots. It can't touch cookies, passwords or downloads, and it can't run its own
-JavaScript.
+JavaScript unless you set `allow_scripts = true`.
+
+More tools (devtools and claude-in-chrome parity): `read_console_messages`,
+`read_network_requests`, `network_request`, `har_export`, `javascript_tool`, `press_key`,
+`resize_window`, `handle_dialog`, `file_upload`, `find`, `form_input`, `hover`, `wait_for`,
+`network_route`, `network_unroute`, `browser_batch`, `action_history` and `run_report`.
 
 ## Staying safe
 
@@ -95,7 +100,12 @@ prompts = true                           # show the popups above
 port = 9222
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
+allow_scripts = false                    # true: enables the javascript_tool tool
+show_actions = true                      # false: no cursor/click overlay before actions
+capture_actions = false                  # true: save a screenshot per mutating action for run_report
 ```
+
+Set `ZENPILOT_CONFIG=/path/to/config.toml` to use a different config file.
 
 ## Good to know
 
