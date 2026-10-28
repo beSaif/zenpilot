@@ -30,7 +30,7 @@
   "tools": [
     {
       "name": "list_tabs",
-      "description": "List open tabs with ids. The active tab is marked with *."
+      "description": "List open tabs with ids. The active tab is marked with *. A tab keeps its id while it's open."
     },
     {
       "name": "new_tab",
@@ -59,6 +59,14 @@
     {
       "name": "type",
       "description": "Replace the content of a field (by ref) with text using real key events."
+    },
+    {
+      "name": "select",
+      "description": "Choose an option in a dropdown (by ref): a <select>, a combobox or a listbox."
+    },
+    {
+      "name": "upload",
+      "description": "Attach files to a file input (by ref), as if the user picked them."
     },
     {
       "name": "scroll",

@@ -133,3 +133,26 @@ def test_register_desktop_keeps_other_settings(tmp_path):
     assert data["preferences"] == {"a": 1} and data["mcpServers"]["other"] == {"command": "x"}
     assert data["mcpServers"]["zenpilot"] == {"command": "/opt/bin/uvx", "args": ["zenpilot"]}
     assert "not installed" in cli.register_desktop(["x"], tmp_path / "missing/config.json")
+
+
+def test_log_prints_a_timeline(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.toml"
+    log = tmp_path / "audit.jsonl"
+    path.write_text(f'audit_log = "{log}"\n')
+    monkeypatch.setattr(cli, "load_config", lambda: load_config(path))
+    site = "career55.sapsf.eu"
+    calls = [
+        {"tool": "click", "params": {"ref": "r55", "element": 'button "Next"'}, "domain": site, "ok": True},
+        {"tool": "upload", "params": {"ref": "r9", "paths": ["/d/cv.pdf"], "element": 'file "CV"'}, "domain": site},
+        {"tool": "read_page", "params": {"tab_id": "t5"}, "ok": False, "error": "Unknown tab id 't5'. Call list_tabs."},
+    ]
+    lines = [json.dumps({"ts": f"2026-10-28T06:4{i}:00+00:00", "ms": 1, "ok": True} | c) for i, c in enumerate(calls)]
+    log.write_text("\n".join([lines[0], "not json", *lines[1:]]) + "\n")
+    cli.log(type("Args", (), {"n": 50, "errors": False}))
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 3
+    assert 'click      r55 button "Next"' in out[0] and out[0].rstrip().endswith(f"{site:<24} ok")
+    assert 'upload     r9 file "CV": cv.pdf' in out[1]
+    assert out[2].endswith("✗ Unknown tab id 't5'")
+    cli.log(type("Args", (), {"n": 1, "errors": True}))
+    assert capsys.readouterr().out.count("\n") == 1

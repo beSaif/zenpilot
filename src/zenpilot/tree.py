@@ -1,6 +1,7 @@
 """Ref table and rendering for read_page."""
 
 import itertools
+from collections import Counter
 from dataclasses import dataclass
 from importlib.resources import files
 
@@ -37,6 +38,11 @@ class Ref:
     tab: str
     context: str
     shared_id: str
+    key: str = ""  # role and name, e.g. 'button "Apply"'
+    # The page it was read on, set when it's in the top frame and no other control there has
+    # the same key: then it can be found again after a re-render or a reconnect.
+    url: str = ""
+    session: int = 0  # BiDi session whose node ids these are
 
 
 class Refs:
@@ -58,6 +64,9 @@ class Refs:
     def get(self, key: str) -> Ref | None:
         return self._refs.get(key.strip().lower())
 
+    def replace(self, key: str, ref: Ref) -> None:
+        self._refs[key.strip().lower()] = ref
+
     def drop_tab(self, tab: str) -> None:
         self._refs = {k: r for k, r in self._refs.items() if r.tab != tab}
 
@@ -71,9 +80,17 @@ class Item:
     line: str
     context: str
     shared_id: str | None = None
+    key: str | None = None
+    unique: bool = False  # no other control in its frame has this key
 
 
-def render(items: list[Item], refs: Refs, tab: str, truncated: bool = False) -> str:
+def mark_unique(items: list[Item], context: str) -> None:
+    keys = Counter(it.key for it in items if it.key and it.context == context)
+    for it in items:
+        it.unique = it.context == context and keys[it.key] == 1
+
+
+def render(items: list[Item], refs: Refs, tab: str, truncated: bool = False, url: str = "", session: int = 0) -> str:
     """Format items as an indented outline, assigning refs to interactive nodes.
 
     Over budget, plain text lines go first (get_text covers prose), then the tail.
@@ -89,7 +106,8 @@ def render(items: list[Item], refs: Refs, tab: str, truncated: bool = False) -> 
             truncated = True
             break
         if it.shared_id:
-            line = "  " * it.depth + refs.add(Ref(tab, it.context, it.shared_id)) + " " + it.line
+            ref = Ref(tab, it.context, it.shared_id, it.key or "", url if it.unique else "", session)
+            line = "  " * it.depth + refs.add(ref) + " " + it.line
         lines.append(line)
         size += len(line) + 1
     if truncated:

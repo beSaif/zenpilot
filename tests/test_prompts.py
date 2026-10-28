@@ -11,7 +11,6 @@ def env(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
     monkeypatch.setattr(server, "load_config", lambda: load_config(path))
     monkeypatch.setattr(server, "set_config_value", lambda k, v: set_config_value(k, v, path))
-    monkeypatch.setattr(server, "_allowed_for_session", set())
     monkeypatch.setattr(server, "_declined", set())
     answers, asked = [], []
 
@@ -38,12 +37,17 @@ def test_always_allow_saves_to_the_allowlist(env):
     assert default == "Don't Allow"  # a stray Enter must not grant access
 
 
-def test_allow_this_session_is_not_saved(env):
-    path, answers, _ = env
-    answers.append("Allow This Session")
+def test_allow_for_hours_outlives_the_server_but_not_the_hours(env, monkeypatch):
+    path, answers, asked = env
+    answers.append("Allow for 12 Hours")
     assert server._grant("github.com", cfg()) is True
-    assert server._allowed_for_session == {"github.com"}
+    assert "Allow for 12 Hours" in asked[0][1]
     assert "github.com" not in load_config(path).allowlist
+    # Kept in the state file, so a restarted server (a resumed Claude session) still has it.
+    assert server._granted() == ["github.com"]
+    later = server.time.time() + 13 * 3600
+    monkeypatch.setattr(server.time, "time", lambda: later)
+    assert server._granted() == []
 
 
 @pytest.mark.parametrize("answer", ["Don't Allow", None])  # None: timed out

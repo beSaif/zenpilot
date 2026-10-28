@@ -16,20 +16,33 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import dialogs
 from .bidi import BiDiError
-from .browser import Browser, BrowserError
+from .browser import Browser, BrowserError, FilesRefused
 from .report import SessionReport
 from .safety import (
     CONFIG_PATH,
     Blocked,
     Config,
     audit,
+    check_upload,
     check_url,
     domain_of,
     load_config,
+    load_state,
+    save_state,
     set_config_value,
     untrusted,
 )
-from .zen import DEFAULT_PROFILE, ZenError, describe, launch, port_open, profile_names
+from .zen import (
+    DEFAULT_PROFILE,
+    UPLOAD_PREF,
+    ZenError,
+    describe,
+    ensure_prefs,
+    launch,
+    port_open,
+    profile_names,
+    resolve,
+)
 from .zen import version as zen_version
 
 INSTRUCTIONS = """\
@@ -45,8 +58,23 @@ mcp = MCPServer("zenpilot", instructions=INSTRUCTIONS)
 browser = Browser()
 session_report = SessionReport(zen_version=zen_version())
 _launching = asyncio.Lock()
-_allowed_for_session: set[str] = set()
+# "Allow for 12 Hours" grants live in a state file, so they survive a restart of this server
+# (a resumed Claude Code session is a new process) and apply to every zenpilot.
+GRANT_HOURS = 12
 _declined: set[str] = set()  # not asked again while this server runs
+
+
+def _granted() -> list[str]:
+    now = time.time()
+    return [d for d, until in load_state("grants").items() if isinstance(until, (int, float)) and until > now]
+
+
+def _grant_for_hours(domain: str) -> None:
+    now = time.time()
+    grants = {d: until for d, until in load_state("grants").items() if isinstance(until, (int, float)) and until > now}
+    save_state("grants", grants | {domain: now + GRANT_HOURS * 3600})
+
+
 _cfg: ContextVar[Config] = ContextVar("cfg")
 _domain: ContextVar[str | None] = ContextVar("domain", default=None)
 
@@ -61,7 +89,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
                 cfg = load_config()
             except (OSError, ValueError) as e:
                 raise ToolError(f"zenpilot config error in {CONFIG_PATH}: {e}") from None
-            cfg.allowlist += sorted(_allowed_for_session - set(cfg.allowlist))
+            cfg.allowlist += sorted(set(_granted()) - set(cfg.allowlist))
             _cfg.set(cfg)
             _domain.set(None)
             start, ok, error, finding = time.perf_counter(), False, None, True
@@ -79,11 +107,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
                         except Blocked as e:
                             if attempt == 2 or not (e.domain and cfg.prompts):
                                 raise
-                            if not await anyio.to_thread.run_sync(_grant, e.domain, cfg):
-                                raise Blocked(
-                                    f"The user didn't allow zenpilot to use '{e.domain}'. "
-                                    "Don't work around it; ask them if you need it."
-                                ) from None
+                            await _ask(e.domain, cfg)
                 ok = True
                 return result
             except Blocked as e:  # the user's settings, not something to fix in zenpilot
@@ -101,6 +125,8 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
             finally:
                 ms = (time.perf_counter() - start) * 1000
                 params = {k: ({"chars": len(v)} if k in redact else v) for k, v in kwargs.items()}
+                if "ref" in kwargs and (element := browser.ref_key(kwargs["ref"])):
+                    params["element"] = element
                 try:
                     audit(cfg, fn.__name__, params, _domain.get(), ok, ms, error)
                 except OSError as e:
@@ -129,7 +155,7 @@ def _start_zen(cfg: Config) -> None:
         set_config_value("profile", cfg.profile)
     reopen = "Reopen Zen"
     confirm = (lambda q: dialogs.ask(q, ["Not Now", reopen], "Not Now") == reopen) if cfg.prompts else None
-    launch(cfg.profile, cfg.port, confirm)
+    launch(cfg.profile, cfg.port, confirm, prefs=[UPLOAD_PREF] if cfg.upload_dirs else [])
 
 
 def _choose_profile() -> str:
@@ -145,11 +171,19 @@ def _choose_profile() -> str:
     return labels[picked]
 
 
+async def _ask(domain: str, cfg: Config) -> None:
+    """Ask the user to allow a blocked domain, or raise Blocked."""
+    if not await anyio.to_thread.run_sync(_grant, domain, cfg):
+        raise Blocked(
+            f"The user didn't allow zenpilot to use '{domain}'. Don't work around it; ask them if you need it."
+        ) from None
+
+
 def _grant(domain: str, cfg: Config) -> bool:
     """Ask the user to allow a blocked domain. Runs in a thread."""
     if domain in _declined:
         return False
-    always, session = "Always Allow", "Allow This Session"
+    always, session = "Always Allow", f"Allow for {GRANT_HOURS} Hours"
     answer = dialogs.ask(
         f"Claude wants to read and act on {domain} in Zen (profile \u201c{cfg.profile or DEFAULT_PROFILE}\u201d).\n\n"
         "Pages can contain text that tries to steer Claude. Only allow sites you trust.",
@@ -159,7 +193,7 @@ def _grant(domain: str, cfg: Config) -> bool:
     if answer == always:
         set_config_value("allowlist", [*load_config().allowlist, domain])
     elif answer == session:
-        _allowed_for_session.add(domain)
+        _grant_for_hours(domain)
     else:
         _declined.add(domain)
         return False
@@ -185,16 +219,17 @@ def _frame_reason(url: str) -> str | None:
 
 @tool()
 async def list_tabs() -> str:
-    """List open tabs with ids. The active tab is marked with *."""
-    lines = []
+    """List open tabs with ids. The active tab is marked with *. A tab keeps its id while it's open."""
+    cfg, lines = _cfg.get(), []
     for t in await browser.tabs():
         mark = "*" if t["active"] else " "
         try:
-            check_url(t["url"], _cfg.get())
+            check_url(t["url"], cfg)
             lines.append(f"{mark}{t['id']} {t['url']} | {t['title']}")
-        except Blocked:
-            lines.append(f"{mark}{t['id']} [not allowlisted: {domain_of(t['url'])}]")
-    return untrusted("\n".join(lines) or "[no tabs]", "tab titles")
+        except Blocked as e:
+            hint = "using it asks the user to allow it" if e.domain and cfg.prompts else "ask the user"
+            lines.append(f"{mark}{t['id']} [not allowlisted: {domain_of(t['url'])}; {hint}]")
+    return untrusted("\n".join(lines) or "[no tabs: Zen has no open window]", "tab titles")
 
 
 @tool(mutates=True)
@@ -207,7 +242,7 @@ async def new_tab(url: str | None = None) -> str:
     if not url:
         return f"Opened tab {tab_id}."
     final, loading = await browser.navigate(await browser.tab(tab_id), url)
-    return f"Opened tab {tab_id}. " + _arrival(final, loading)
+    return f"Opened tab {tab_id}. " + await _arrival(final, loading)
 
 
 @tool()
@@ -227,13 +262,22 @@ async def close_tab(tab_id: str) -> str:
     return f"Closed {tab['id']}."
 
 
-def _arrival(final: str, loading: bool) -> str:
+async def _arrival(final: str, loading: bool) -> str:
+    """Report where a navigation ended. A redirect to a blocked site (a login page, say) asks the user."""
     msg = f"Now at {final}" + (" (still loading)." if loading else ".")
+    cfg = _cfg.get()
     try:
-        check_url(final, _cfg.get())
+        check_url(final, cfg)
+        return msg
     except Blocked as e:
-        raise Blocked(f"{msg} {e} Further actions on this tab are blocked.") from None
-    return msg
+        if not (e.domain and cfg.prompts):
+            raise Blocked(f"The page loaded but ended up on a site that isn't allowed. {msg} {e}") from None
+        _domain.set(e.domain)
+        try:
+            await _ask(e.domain, cfg)
+        except Blocked as declined:
+            raise Blocked(f"The page loaded but ended up on a site that isn't allowed. {msg} {declined}") from None
+        return msg
 
 
 @tool(mutates=True)
@@ -243,7 +287,7 @@ async def navigate(url: str, tab_id: str | None = None) -> str:
     _domain.set(domain_of(url))
     check_url(url, _cfg.get())
     final, loading = await browser.navigate(tab, url)
-    return _arrival(final, loading)
+    return await _arrival(final, loading)
 
 
 @tool()
@@ -253,6 +297,7 @@ async def read_page(tab_id: str | None = None) -> str:
     Interactive elements get refs like r12 for click and type. Checkboxes, radios and
     switches show checked or unchecked. "clickable" marks an element with a pointer
     cursor but no role, often a custom toggle; its label is usually the text before it.
+    An open dropdown's options are listed under it, the first few only; select picks any.
     Refs expire when you call read_page again or the page navigates.
     """
     tab = await _tab(tab_id)
@@ -277,13 +322,48 @@ async def click(ref: str) -> str:
 async def type(ref: str, text: str, submit: bool = False) -> str:
     """Replace the content of a field (by ref) with text using real key events.
 
-    For a <select>, text picks the option starting with it. Date, time, color and range inputs take
+    To choose from a dropdown, use select. Date, time, color and range inputs take
     their value format instead: date YYYY-MM-DD, time HH:MM (24-hour), datetime-local
     YYYY-MM-DDTHH:MM, month YYYY-MM, week YYYY-Www, color #rrggbb. Newlines in text are typed as
     Shift+Enter, so they don't send chat messages; submit=true presses Enter after.
     """
     await _check_ref(ref)
     return await browser.type(ref, text, submit)
+
+
+@tool(mutates=True)
+async def select(ref: str, option: str) -> str:
+    """Choose an option in a dropdown (by ref): a <select>, a combobox or a listbox.
+
+    Opens it, types to filter if it's a text field, clicks the option whose text is option
+    (or the only one starting with or containing it), then checks the choice took.
+    """
+    await _check_ref(ref)
+    return await browser.select(ref, option)
+
+
+@tool(mutates=True)
+async def upload(ref: str, paths: list[str]) -> str:
+    """Attach files to a file input (by ref), as if the user picked them.
+
+    paths are absolute file paths. Only files in the folders the user listed in upload_dirs
+    in zenpilot's config are allowed. Uploads are logged.
+    """
+    cfg = _cfg.get()
+    files = [check_upload(p, cfg) for p in paths]
+    if not files:
+        raise Blocked("Give at least one file path.")
+    await _check_ref(ref)
+    try:
+        return await browser.upload(ref, files)
+    except FilesRefused:
+        profile = cfg.profile or DEFAULT_PROFILE
+        ensure_prefs(resolve(profile), [UPLOAD_PREF])
+        raise ZenError(
+            f"Zen can't take files until it restarts once: uploads need the {UPLOAD_PREF[0]} pref, which zenpilot "
+            f"has now set in profile \u201c{profile}\u201d. Ask the user to quit Zen (Cmd+Q); the next zenpilot "
+            "call reopens it."
+        ) from None
 
 
 @tool()
@@ -316,10 +396,10 @@ async def get_text(tab_id: str | None = None, max_chars: int = 8000) -> str:
 async def report_limitation(goal: str, problem: str, workaround: str = "") -> str:
     """Tell the zenpilot developers about something you couldn't do in Zen with these tools.
 
-    Call it once per problem when a task needs something the tools lack (uploading a file, drag
-    and drop, a widget that ignores clicks or typing, content read_page doesn't show) or only
-    works after a workaround. goal: what you were trying to do, in a few words, like "upload a
-    CV on a job form". problem: what you tried and what happened, naming the elements, refs'
+    Call it once per problem when a task needs something the tools lack (drag and drop, a
+    widget that ignores clicks, typing or select, content read_page doesn't show) or only
+    works after a workaround. goal: what you were trying to do, in a few words, like "pick a
+    date on a booking form". problem: what you tried and what happened, naming the elements, refs'
     roles and errors. workaround: what worked instead, if anything. It's saved on the user's
     Mac for them to review and file as a GitHub issue, so leave out personal data and anything
     the user typed.

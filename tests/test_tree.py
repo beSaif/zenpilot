@@ -1,7 +1,7 @@
 """Ref table, BiDi value unwrapping and read_page rendering."""
 
 from zenpilot import tree
-from zenpilot.tree import Item, Ref, Refs, render, unwrap
+from zenpilot.tree import Item, Ref, Refs, mark_unique, render, unwrap
 
 
 def test_unwrap_values():
@@ -85,3 +85,18 @@ def test_walker_js_is_a_bare_function_expression():
     # Firefox wraps functionDeclaration in parentheses; a trailing ';' breaks it.
     src = tree.WALKER_JS.strip()
     assert src.endswith("}") and "(maxItems) =>" in src
+
+
+def test_only_unique_top_frame_refs_can_be_found_again():
+    refs = Refs()
+    items = [
+        Item(0, 'button "Apply"', "top", "n1", 'button "Apply"'),
+        Item(0, 'button "Delete"', "top", "n2", 'button "Delete"'),
+        Item(0, 'button "Delete"', "top", "n3", 'button "Delete"'),
+        Item(1, 'button "Apply"', "frame", "n4", 'button "Apply"'),
+    ]
+    mark_unique(items, "top")
+    render(items, refs, "t1", url="https://x.com/", session=3)
+    assert refs.get("r1") == Ref("t1", "top", "n1", 'button "Apply"', "https://x.com/", 3)
+    assert [refs.get(f"r{i}").url for i in (2, 3, 4)] == ["", "", ""]
+    assert refs.get("r4").key == 'button "Apply"'  # still named, for the audit log

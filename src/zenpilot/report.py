@@ -2,7 +2,7 @@
 
 Two sources feed a report. The server records every tool call that failed for a reason other
 than the user's settings, and every slow one. Claude adds what it couldn't do with the tools at
-all (an upload, a widget that ignores clicks) through report_limitation, since only it knows
+all (drag and drop, a widget that ignores clicks) through report_limitation, since only it knows
 what it was trying to do. The file is rewritten on each new finding, so it survives a crash.
 """
 

@@ -4,12 +4,14 @@ import json
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 CONFIG_PATH = Path(os.environ.get("ZENPILOT_CONFIG", "~/.config/zenpilot/config.toml")).expanduser()
+# Tab ids and temporary site approvals, shared by every zenpilot process (Claude Desktop, Claude Code, ...).
+STATE_DIR = Path(os.environ.get("ZENPILOT_STATE", "~/.local/state/zenpilot")).expanduser()
 
 DEFAULT_CONFIG = """\
 # zenpilot config. Changes apply on the next tool call; no restart needed.
@@ -38,12 +40,21 @@ auto_launch = true
 # false: blocked sites just fail, and Zen must be started by hand.
 prompts = true
 
-# Every tool call is appended here as one JSON line.
+# Every tool call is appended here as one JSON line. Typed text is never logged,
+# only its length. `zenpilot log` prints it as a timeline.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 
 # A session with failed or slow tool calls, or things Claude couldn't do, leaves a report
 # here. `zenpilot report --issue` turns the latest into a GitHub issue.
 report_dir = "~/.local/state/zenpilot/reports"
+
+# true leaves ?query and #fragment out of URLs in the audit log. They can hold
+# search terms, composed post text and session tokens.
+audit_redact_urls = false
+
+# Folders whose files the upload tool may put into a page's file inputs, e.g.
+# ["~/Documents/Applications"]. Subfolders count too. Empty: uploads are off.
+upload_dirs = []
 """
 
 # Pages that carry no site content and inherit nothing worth protecting.
@@ -67,6 +78,8 @@ class Config:
     auto_launch: bool = True
     prompts: bool = True
     report_dir: Path = Path("~/.local/state/zenpilot/reports").expanduser()
+    audit_redact_urls: bool = False
+    upload_dirs: list[Path] = field(default_factory=list)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -78,6 +91,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     allowlist = raw.get("allowlist", [])
     if not isinstance(allowlist, list) or not all(isinstance(d, str) for d in allowlist):
         raise ValueError(f"{path}: allowlist must be a list of domain strings")
+    upload_dirs = raw.get("upload_dirs", [])
+    if not isinstance(upload_dirs, list) or not all(isinstance(d, str) for d in upload_dirs):
+        raise ValueError(f"{path}: upload_dirs must be a list of folder paths")
     return Config(
         allowlist=[normalize_domain(d) for d in allowlist if d.strip()],
         read_only=bool(raw.get("read_only", False)),
@@ -88,6 +104,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         auto_launch=raw.get("auto_launch", defaults["auto_launch"]) is True,
         prompts=raw.get("prompts", defaults["prompts"]) is True,
         report_dir=Path(raw.get("report_dir", defaults["report_dir"])).expanduser(),
+        audit_redact_urls=raw.get("audit_redact_urls", False) is True,
+        upload_dirs=[Path(d).expanduser().resolve() for d in upload_dirs if d.strip()],
     )
 
 
@@ -133,6 +151,36 @@ def check_url(url: str, cfg: Config) -> str:
     )
 
 
+def check_upload(path: str, cfg: Config) -> str:
+    """Resolve a file for upload, or raise Blocked unless it's inside one of upload_dirs."""
+    if not cfg.upload_dirs:
+        raise Blocked(f"Uploads are off. Ask the user to add the folder with the file to upload_dirs in {CONFIG_PATH}.")
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        raise Blocked(f"'{path}' isn't an absolute path.")
+    real = p.resolve()  # follows symlinks, so a link can't point outside the folders
+    if not any(real.is_relative_to(d) for d in cfg.upload_dirs):
+        dirs = ", ".join(str(d) for d in cfg.upload_dirs)
+        raise Blocked(f"'{path}' isn't in a folder zenpilot may upload from ({dirs}). Ask the user.")
+    if not real.is_file():
+        raise Blocked(f"'{path}' doesn't exist or isn't a file.")
+    return str(real)
+
+
+def load_state(name: str) -> dict:
+    try:
+        return json.loads((STATE_DIR / f"{name}.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(name: str, data: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_DIR / f".{name}.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data))
+    tmp.replace(STATE_DIR / f"{name}.json")
+
+
 _TAG = "untrusted_web_content"
 
 
@@ -147,7 +195,13 @@ def untrusted(text: str, source: str) -> str:
     )
 
 
+_URL_TAIL = re.compile(r"([a-z]+://[^\s?#]*)[?#][^\s]*")
+
+
 def audit(cfg: Config, tool: str, params: dict, domain: str | None, ok: bool, ms: float, error: str | None = None):
+    if cfg.audit_redact_urls:
+        params = {k: _URL_TAIL.sub(r"\1", v) if isinstance(v, str) else v for k, v in params.items()}
+        error = error and _URL_TAIL.sub(r"\1", error)
     record = {
         "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "tool": tool,

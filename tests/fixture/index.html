@@ -9,6 +9,8 @@
   .knob, .toggle { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: #ccc; vertical-align: middle; }
   .switch input:checked + .knob, .toggle.on { background: #4c4; }
   .toggle { cursor: pointer; }
+  #country-list { position: absolute; background: #fff; border: 1px solid #999; max-height: 200px; overflow: auto;
+    margin: 0; padding: 0; list-style: none; }
 </style>
 </head>
 <body>
@@ -29,6 +31,14 @@
     <input type="date" aria-label="Delivery date" onchange="log('date:' + this.value)">
     <button type="submit">Sign up</button>
   </form>
+  <!-- Like SAP UI5: typing filters the list, only clicking an option commits it, and Details waits for it. -->
+  <label for="country">Country</label>
+  <input id="country" role="combobox" aria-controls="country-list" aria-expanded="false" autocomplete="off">
+  <select id="details" aria-label="Details" disabled onchange="log('details:' + this.value)">
+    <option></option><option>Job Posting: Other</option>
+  </select>
+  <input type="file" aria-label="CV" multiple onchange="log('files:' + [...this.files].map((f) => f.name).join(','))">
+  <button>Same</button> <button>Same</button>
   <button id="trusted" onclick="log('click:' + event.isTrusted)">Check trust</button>
   <button id="rerender" onclick="rerender()">Rerender</button>
   <div id="hidden"><button>Invisible button</button></div>
@@ -43,8 +53,39 @@
   <div id="spacer">Tall content</div>
   <button id="bottom" onclick="log('bottom:' + event.isTrusted)">Bottom button</button>
 </main>
+<footer>Fixture footer</footer>
+<ul id="country-list" role="listbox" hidden></ul>
 <script>
   function log(msg) { document.getElementById("log").textContent += msg + "\n"; }
+  const COUNTRIES = ["Albania", "Andorra", "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czechia",
+    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Italy",
+    "Latvia", "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Monaco", "Netherlands", "Norway", "Poland",
+    "Portugal", "Romania", "San Marino", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland", "Ukraine",
+    "United Kingdom", "United States", "Vatican City", "Kosovo"];
+  const list = document.getElementById("country-list");
+  // Each option wraps a menuitem with the same text, as SAP SuccessFactors renders them.
+  list.innerHTML = COUNTRIES.map((c) => `<li role="option" aria-selected="false"><span role="menuitem" tabindex="0">${c}</span></li>`).join("");
+  function openList() {
+    const r = document.getElementById("country").getBoundingClientRect();
+    Object.assign(list.style, { left: r.left + scrollX + "px", top: r.bottom + scrollY + "px" });
+    list.hidden = false;
+    document.getElementById("country").setAttribute("aria-expanded", "true");
+  }
+  document.getElementById("country").addEventListener("click", openList);
+  document.getElementById("country").addEventListener("input", (e) => {
+    openList();
+    for (const li of list.children) li.hidden = !li.textContent.toLowerCase().includes(e.target.value.toLowerCase());
+  });
+  list.addEventListener("click", (e) => {
+    const li = e.target.closest("[role=option]");
+    const combo = document.getElementById("country");
+    combo.value = li.textContent;
+    combo.setAttribute("aria-expanded", "false");
+    list.hidden = true;
+    for (const o of list.children) o.setAttribute("aria-selected", o === li);
+    document.getElementById("details").disabled = false;
+    log("country:" + li.textContent + ":" + e.isTrusted);
+  });
   function rerender() { const m = document.querySelector("main"); m.innerHTML = m.innerHTML; }
   document.getElementById("cracked").addEventListener("click", (e) => {
     e.currentTarget.classList.toggle("on");
