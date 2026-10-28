@@ -26,6 +26,8 @@ You need a Mac with Zen in `/Applications`.
 
 **Claude Desktop:** download `zenpilot-<version>.mcpb` from the
 [latest release](https://github.com/beSaif/zenpilot/releases/latest) and open it. That's it.
+It updates itself to the newest release each time Claude Desktop starts (versions before
+0.4.1 don't, so install it once more if yours is older).
 
 **Claude Code (or both):** with [uv](https://docs.astral.sh/uv/) installed, run:
 
@@ -33,6 +35,8 @@ You need a Mac with Zen in `/Applications`.
 uv tool install zenpilot
 zenpilot setup
 ```
+
+Update it with `uv tool upgrade zenpilot`.
 
 Setup asks which Zen profile to use and which sites Claude may visit. Then it connects
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
