@@ -129,3 +129,34 @@ async def test_no_window_is_explained():
     b.call = create_fails
     with pytest.raises(BrowserError, match="Ask the user to open a Zen window"):
         await b.new_tab()
+
+
+async def test_actions_report_what_changed_on_the_page():
+    b = FakeBrowser([ctx("a", "https://shop.example.com/cart")])
+    await ids(b)
+    b.pages["a"] = [Item(0, 'button "Pay"', "a", "n1", 'button "Pay"'), Item(0, '"Loading…"', "a")]
+    await b.read_page(await b.tab("t1"), lambda url: None)
+    ref = b.refs.get("r1")
+    b.pages["a"] = [
+        Item(0, 'button "Pay"', "a", "n1", 'button "Pay"'),
+        Item(0, "dialog", "a"),
+        Item(1, 'button "Confirm"', "a", "n2", 'button "Confirm"'),
+    ]
+    out = await b._changes(ref)
+    assert "+ dialog" in out and '+ r2 button "Confirm"' in out and '- "Loading…"' in out
+    assert 'button "Pay"' not in out.split("Page changes:")[1]  # unchanged lines are left out
+    assert b.refs.get("r2").url == "https://shop.example.com/cart"  # unique, so it can be found again
+    assert "didn't change" in await b._changes(ref)  # compared with the latest walk, not read_page's
+
+
+async def test_stop_on_the_badge_is_the_users_not_zenpilots_click():
+    b = FakeBrowser([])
+    stop = {"channel": "zenpilot", "data": {"type": "string", "value": "stop"}}
+    b._busy_input = True  # zenpilot's own click landed on the badge
+    b._on_message(stop)
+    assert not b.stopped
+    b._busy_input = False
+    b._on_message({"channel": "other", "data": {"type": "string", "value": "stop"}})
+    assert not b.stopped
+    b._on_message(stop)
+    assert b.stopped

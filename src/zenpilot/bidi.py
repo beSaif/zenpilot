@@ -24,6 +24,7 @@ class BiDi:
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._listeners: list[tuple[str, Callable[[dict], bool], asyncio.Future]] = []
+        self._handlers: dict[str, list[Callable[[dict], None]]] = {}
         self._reader: asyncio.Task | None = None
 
     @property
@@ -73,6 +74,10 @@ class BiDi:
         self._listeners.append((method, predicate, fut))
         return fut
 
+    def on(self, method: str, handler: Callable[[dict], None]) -> None:
+        """Call handler(params) on every event of this method, for as long as the connection lasts."""
+        self._handlers.setdefault(method, []).append(handler)
+
     async def _read_loop(self) -> None:
         try:
             async for raw in self._ws:
@@ -89,6 +94,8 @@ class BiDi:
     def _dispatch(self, msg: dict) -> None:
         if msg.get("type") == "event":
             method, params = msg["method"], msg["params"]
+            for handler in self._handlers.get(method, []):
+                handler(params)
             keep = []
             for listener in self._listeners:
                 m, pred, fut = listener

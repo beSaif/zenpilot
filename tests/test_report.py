@@ -61,6 +61,7 @@ def test_issue_url():
 
 class FakeBrowser:
     connected = True
+    stopped = False
 
     def __init__(self, tab=None, error=None):
         self._tab, self._error = tab, error
@@ -73,6 +74,9 @@ class FakeBrowser:
         if self._error:
             raise self._error
         return self._tab
+
+    async def mark(self, context, action=None):
+        pass
 
 
 @pytest.fixture

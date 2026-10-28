@@ -11,6 +11,7 @@ from zenpilot.safety import Config
 
 class FakeBrowser:
     connected = True
+    stopped = False
 
     def __init__(self):
         self.tabs_list = [
@@ -32,6 +33,16 @@ class FakeBrowser:
     def ref_key(self, key):
         return 'button "Apply"' if key == "r1" else None
 
+    def ref(self, key):
+        return key
+
+    def top_context(self, ref):
+        return "c1"
+
+    async def mark(self, context, action=None):
+        self.marked = context
+        self.actions = [*getattr(self, "actions", []), action]
+
     async def ref_url(self, key):
         return "https://ok.com/form"
 
@@ -48,7 +59,8 @@ def env(tmp_path, monkeypatch):
     config.report_dir = tmp_path / "reports"
     monkeypatch.setattr(server, "load_config", lambda: Config(**vars(config) | {"allowlist": list(config.allowlist)}))
     monkeypatch.setattr(server, "browser", FakeBrowser())
-    monkeypatch.setattr(server, "_declined", set())
+    monkeypatch.setattr(server, "_declined", {})
+    monkeypatch.setattr(server, "_stop_told", False)
     answers = []
     monkeypatch.setattr(server.dialogs, "ask", lambda message, buttons, default: answers.pop(0))
     return config, answers
@@ -86,3 +98,34 @@ async def test_redirect_to_a_blocked_site_asks_the_user(env):
     assert "The page loaded but ended up on a site that isn't allowed" in str(e.value)
     assert "didn't allow zenpilot to use 'idp.evil.com'" in str(e.value)
     assert records(config)[-1]["domain"] == "idp.evil.com"
+
+
+async def test_dialog_timeout_says_nobody_answered(env):
+    config, answers = env
+    server.browser.landing = "https://idp.example.net/"
+    answers.append(None)
+    with pytest.raises(server.ToolError, match="Nobody answered the dialog asking to allow 'idp.example.net'"):
+        await server.navigate(url="https://ok.com/login")
+
+
+async def test_stop_refuses_once_then_asks_to_continue(env):
+    config, answers = env
+    server.browser.stopped = True
+    with pytest.raises(server.ToolError, match="pressed Stop"):
+        await server.click(ref="r1")
+    assert answers == []  # the first call after Stop is refused without asking
+    answers.append("Keep Stopped")
+    with pytest.raises(server.ToolError, match="pressed Stop"):
+        await server.click(ref="r1")
+    answers.append("Let It Continue")
+    assert await server.click(ref="r1") == "Clicked r1."
+    assert server.browser.stopped is False and server.browser.marked == "c1"
+
+
+async def test_the_badge_says_what_zenpilot_is_doing_but_not_what_it_types(env):
+    await server.click(ref="r1")
+    assert server.browser.actions[-2:] == ["Clicking \u201cApply\u201d", "Clicked \u201cApply\u201d"]
+    await server.navigate(url="https://ok.com/done")
+    assert server.browser.actions[-1] == "Opened ok.com"
+    server._call.set(("type", {"ref": "r1", "text": "my secret"}))
+    assert "secret" not in server._action()

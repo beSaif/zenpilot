@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import report as reports
 from . import zen
-from .safety import CONFIG_PATH, load_config, normalize_domain, set_config_value
+from .safety import CONFIG_PATH, grants, load_config, normalize_domain, revoke, set_config_value
 
 NAME = "zenpilot"
 DESKTOP_CONFIG = Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
@@ -168,6 +168,8 @@ def doctor(args) -> int:
     modes = [m for m, on in [("read-only", cfg.read_only), ("ALL SITES ALLOWED", cfg.allow_all_sites)] if on]
     print(f"✓ Config {CONFIG_PATH}" + (f" ({', '.join(modes)})" if modes else ""))
     print(f"  allowlist: {', '.join(cfg.allowlist) or '(empty)'}")
+    if granted := _grants():
+        print(f"  for now: {granted}")
     report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
     path = zen.profile_path(cfg.profile) if cfg.profile else None
     if cfg.profile is None:
@@ -207,12 +209,27 @@ def allow(args) -> int:
         raise ValueError("not a domain: " + args.domains[domains.index("")])
     if args.remove:
         new = [d for d in cfg.allowlist if d not in domains]
+        if set(domains) & set(grants()):
+            revoke(domains)
     else:
         new = list(dict.fromkeys(cfg.allowlist + domains))
     if new != cfg.allowlist:
         set_config_value("allowlist", new)
     print(f"Allowlist: {', '.join(new) or '(empty)'}")
+    if granted := _grants():
+        print(f"For now: {granted}")
     return 0
+
+
+def _grants() -> str:
+    """Sites allowed for a while from the dialog, with when that ends."""
+    today = datetime.now().date()
+
+    def until(ts: float) -> str:
+        end = datetime.fromtimestamp(ts)
+        return end.strftime("%H:%M" if end.date() == today else "%a %H:%M")
+
+    return ", ".join(f"{d} (until {until(ts)})" for d, ts in sorted(grants().items()))
 
 
 def report(args) -> int:
@@ -306,7 +323,7 @@ def main() -> None:
     sub.add_parser("doctor", help="check each part of the setup")
     p = sub.add_parser("allow", help="add sites to the allowlist; with no sites, show it")
     p.add_argument("domains", nargs="*", metavar="domain")
-    p.add_argument("--remove", action="store_true", help="remove the sites instead")
+    p.add_argument("--remove", action="store_true", help="take the sites off, including ones allowed for a while")
     p = sub.add_parser("report", help="show the latest session report of what Claude couldn't do")
     p.add_argument("file", nargs="?", help="a report to use instead of the latest")
     p.add_argument("--issue", action="store_true", help="open a GitHub issue prefilled with it")
@@ -317,6 +334,10 @@ def main() -> None:
     args = parser.parse_args()
 
     command = "doctor" if args.check else args.command
+    if command is None and sys.stdin.isatty():  # a person typed `zenpilot`; the server would just wait
+        parser.print_help()
+        print("\nClaude starts zenpilot itself. To set it up, run `zenpilot setup`.")
+        return
     if command is None:
         _update()
         import anyio

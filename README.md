@@ -13,7 +13,7 @@
 Let Claude use your [Zen browser](https://zen-browser.app). Works with Claude Desktop and
 Claude Code, kind of like Claude in Chrome but for Zen.
 
-[![zenpilot demo: install, set up, then Claude fills in and submits a form in Zen](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)](https://github.com/beSaif/zenpilot/blob/main/docs/demo.mp4)
+![zenpilot demo: install, set up, then Claude fills in and submits a form in Zen](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)
 
 There's no browser extension. zenpilot opens Zen with its remote control turned on and
 talks to it directly.
@@ -37,7 +37,7 @@ zenpilot setup
 ```
 
 It updates itself to the newest release each time Claude Code starts it (offline, the
-installed version runs). To stay on one version, install it pinned: `uv tool install zenpilot==0.4.3`.
+installed version runs). To stay on one version, install it pinned: `uv tool install zenpilot==0.5.0`.
 
 Setup asks which Zen profile to use and which sites Claude may visit. Then it connects
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
@@ -54,9 +54,14 @@ The first time, a few popups may show up. Only you see them, not Claude:
 - **Reopen Zen?** If Zen is already open without remote control, zenpilot offers to restart
   it. Your tabs come back.
 - **Allow this site?** Claude only works on sites you allow. Choose *Don't Allow*, *Allow
-  for 12 Hours* or *Always Allow*.
+  for 12 Hours* or *Always Allow*. If you miss it, it asks again next time. After *Don't
+  Allow* it waits 10 minutes before asking again, or run `zenpilot allow <site>`.
 
 Pressing Enter always picks the safe answer.
+
+While Claude works in a tab, an orange glow goes around the page and a zenpilot badge in the
+bottom-left corner says so. Press **Stop** on it and Claude stops: it's told to ask you what to do, and if it tries
+again, a popup asks whether to let it continue.
 
 Claude can open, switch and close tabs, go to a URL, read the page, click, type, pick from
 dropdowns, scroll and take screenshots. It can attach files to upload, but only from folders
@@ -81,7 +86,8 @@ and URLs lose their `?query` part. Still, read it before you submit.
 ## Staying safe
 
 - **Allowlist.** Claude only works on sites you've allowed. Add one with
-  `zenpilot allow github.com`.
+  `zenpilot allow github.com`. `zenpilot allow` lists them, including the ones allowed for
+  12 hours, and `--remove` takes them off.
 - **Stick to the `zenpilot` profile if you can.** It's logged out of everything. On your main
   profile, a shady page could try to trick Claude into doing stuff in your accounts, so only
   allow sites you trust.
@@ -100,7 +106,7 @@ blocker and so on), which would otherwise happen when remote control is on.
 | Command | What it does |
 |---|---|
 | `zenpilot setup` | Set everything up (see above) |
-| `zenpilot allow [site...]` | Allow sites. `--remove` takes them off. No sites lists them. |
+| `zenpilot allow [site...]` | Allow sites. `--remove` takes them off (12-hour ones too). No sites lists them. |
 | `zenpilot launch` | Open Zen with remote control on |
 | `zenpilot doctor` | Check your setup and say how to fix anything that's broken |
 | `zenpilot report` | Show the latest session report. `--issue` files it on GitHub, `--list` lists them all. |

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -62,9 +63,10 @@ ALWAYS_ALLOWED = {"about:blank", "about:srcdoc", "about:newtab", "about:home"}
 
 
 class Blocked(Exception):
-    def __init__(self, message: str, domain: str | None = None):
+    def __init__(self, message: str, domain: str | None = None, url: str = ""):
         super().__init__(message)
         self.domain = domain  # set when adding this domain to the allowlist would allow it
+        self.url = url
 
 
 @dataclass
@@ -148,6 +150,7 @@ def check_url(url: str, cfg: Config) -> str:
         f"Domain '{domain}' is not on the zenpilot allowlist. "
         f"If they want you to use it, ask the user to run `zenpilot allow {domain}`.",
         domain,
+        url,
     )
 
 
@@ -179,6 +182,25 @@ def save_state(name: str, data: dict) -> None:
     tmp = STATE_DIR / f".{name}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(data))
     tmp.replace(STATE_DIR / f"{name}.json")
+
+
+# "Allow for 12 Hours" answers: {domain: expiry timestamp}, in a state file so they survive a
+# restart of the server (a resumed Claude Code session is a new process) and apply to every zenpilot.
+GRANT_HOURS = 12
+
+
+def grants() -> dict[str, float]:
+    """Domains allowed for a while, with when that ends."""
+    now = time.time()
+    return {d: until for d, until in load_state("grants").items() if isinstance(until, (int, float)) and until > now}
+
+
+def grant(domain: str) -> None:
+    save_state("grants", grants() | {domain: time.time() + GRANT_HOURS * 3600})
+
+
+def revoke(domains: list[str]) -> None:
+    save_state("grants", {d: until for d, until in grants().items() if d not in domains})
 
 
 _TAG = "untrusted_web_content"

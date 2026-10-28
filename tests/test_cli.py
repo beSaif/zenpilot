@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from zenpilot import cli, zen
+from zenpilot import cli, safety, zen
 from zenpilot.safety import load_config, set_config_value
 
 
@@ -114,6 +114,27 @@ def test_allow(tmp_path, monkeypatch, capsys):
     cli.allow(args)
     assert load_config(path).allowlist == ["localhost", "github.com", "example.org"]
     assert capsys.readouterr().out.endswith("Allowlist: localhost, github.com, example.org\n")
+
+
+def test_allow_lists_and_removes_sites_allowed_for_a_while(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "load_config", lambda: load_config(path))
+    monkeypatch.setattr(cli, "set_config_value", lambda k, v: set_config_value(k, v, path))
+    safety.grant("jobs.example.org")
+    args = type("Args", (), {"domains": [], "remove": False})
+    cli.allow(args)
+    assert "For now: jobs.example.org (until " in capsys.readouterr().out
+    args.domains, args.remove = ["jobs.example.org"], True
+    cli.allow(args)
+    assert safety.grants() == {} and "For now" not in capsys.readouterr().out
+
+
+def test_zenpilot_in_a_terminal_prints_help(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["zenpilot"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_update", lambda: pytest.fail("would start the server"))
+    cli.main()
+    assert "zenpilot setup" in capsys.readouterr().out
 
 
 def test_server_command(tmp_path, monkeypatch):

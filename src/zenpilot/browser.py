@@ -2,15 +2,18 @@
 
 import asyncio
 import base64
+import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from importlib.resources import files
 from urllib.parse import urlsplit
 
 import websockets
 
 from .bidi import BiDi, BiDiError
-from .safety import load_state, save_state
+from .safety import load_state, save_state, untrusted
 from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, mark_unique, render, unwrap
 
 # BiDi errors that mean "this node or frame no longer exists".
@@ -23,6 +26,58 @@ SPECIAL_KEYS = {"\n": (SHIFT, ENTER), "\t": "\ue004"}
 # session, so tabs get their old ids back by URL, and refs are found again by role and name.
 IDLE_RELEASE_SECONDS = 120
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
+MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
+
+# The badge (zenpilot's logo and name, so it isn't taken for Claude's own browser extension,
+# and a Stop button) and a glow around the page in the logo's orange.
+# It runs in a sandbox, so the page's scripts can't reach it or fake its button, and sits in
+# a closed shadow root outside <body>, so read_page and get_text don't see it.
+# state: "on", "stopped", "hidden" (for screenshots) or "off".
+BADGE_JS = """(state, send, action) => {
+  let b = globalThis.zenpilotBadge;
+  if (state === "off") { b?.host.remove(); globalThis.zenpilotBadge = null; return; }
+  if (!b) {
+    const host = document.createElement("zenpilot-badge");
+    const root = host.attachShadow({mode: "closed"});
+    root.innerHTML = `<style>
+      :host { all: initial !important; display: block !important; position: fixed !important; width: 0; height: 0; }
+      :host([hidden]) { display: none !important; }
+      .edge { position: fixed; inset: 0; pointer-events: none; z-index: 2147483646;
+        box-shadow: inset 0 0 4px 1px rgba(232, 96, 60, .9), inset 0 0 16px 3px rgba(232, 96, 60, .5),
+          inset 0 0 44px 8px rgba(232, 96, 60, .22);
+        animation: breathe 3s ease-in-out infinite; }
+      .pill { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; display: flex;
+        align-items: center; gap: 8px; padding: 5px 5px 5px 11px; border-radius: 999px;
+        background: rgba(30, 30, 32, .94); color: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+        font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+      svg { width: 16px; height: 16px; flex: none; margin-left: -3px; }
+      b { font-weight: 700; }
+      .text { opacity: .8; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .text:empty { display: none; }
+      .stopped { padding-right: 12px; }
+      .stopped svg { filter: grayscale(1); opacity: .7; }
+      .stopped ~ .edge, .stopped button { display: none; }
+      button { all: unset; cursor: pointer; padding: 4px 10px; border-radius: 999px;
+        background: rgba(255, 255, 255, .14); font-weight: 600; }
+      button:hover { background: rgba(255, 255, 255, .24); }
+      button:focus-visible { outline: 2px solid #e8603c; }
+      @keyframes breathe { 50% { opacity: .8; } }
+      @media (prefers-reduced-motion: reduce) { .edge { animation: none; } }
+    </style><div class="pill" role="status">LOGO<b>zenpilot</b><span class="text" aria-live="polite"></span>
+      <button type="button">Stop</button></div><div class="edge"></div>`;
+    b = globalThis.zenpilotBadge = {host, pill: root.querySelector(".pill"), text: root.querySelector(".text")};
+    root.querySelector("button").addEventListener("click", (e) => {
+      if (e.isTrusted) b.send("stop");
+    });
+  }
+  b.send = send;
+  if (!b.host.isConnected) document.documentElement.append(b.host);
+  b.host.hidden = state === "hidden";
+  if (state === "hidden") return;
+  b.pill.classList.toggle("stopped", state === "stopped");
+  if (state === "stopped") b.text.textContent = "Stopped";
+  else if (action != null) b.text.textContent = action;
+}""".replace("LOGO", (files("zenpilot") / "logo.svg").read_text().strip())
 
 # Scrolls the element into view and reports anything covering its center.
 PREPARE_JS = """(el) => {
@@ -220,6 +275,11 @@ class Browser:
         self._busy = 0
         self._idle_timer: asyncio.TimerHandle | None = None
         self.refs = Refs()
+        self._outlines: dict[str, list[str]] = {}  # context -> its lines at the latest read, to report changes
+        self._badges: set[str] = set()  # contexts showing the badge
+        self._acted = 0.0  # when the last input action ended
+        self._busy_input = False  # an input action is running
+        self.stopped = False  # the user pressed Stop on the badge
 
     # -- connection -------------------------------------------------------
 
@@ -252,12 +312,14 @@ class Browser:
                             "browsingContext.navigationStarted",
                             "browsingContext.load",
                             "browsingContext.contextCreated",
+                            "script.message",
                         ]
                     },
                 )
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
+            bidi.on("script.message", self._on_message)
             self._bidi = bidi
 
     def _new_session(self, port: int) -> None:
@@ -269,6 +331,8 @@ class Browser:
         self._next_tab = max(self._next_tab, self._saved.get("next", 1))
         self._tab_ids.clear()
         self._contexts.clear()
+        self._outlines.clear()
+        self._badges.clear()
         self._session += 1
 
     @property
@@ -278,6 +342,8 @@ class Browser:
     async def close(self) -> None:
         if self._bidi:
             if self._bidi.connected:
+                for context in list(self._badges):
+                    await self._badge(context, "off")
                 try:
                     await self.tabs(probe=False)  # save the tabs' latest URLs, to match them by next time
                 except (BrowserError, BiDiError):
@@ -330,6 +396,43 @@ class Browser:
         if r["type"] == "exception":
             raise BrowserError(f"Script error in page: {r['exceptionDetails'].get('text', '')}")
         return unwrap(r["result"])
+
+    # -- badge --------------------------------------------------------------
+
+    async def _badge(self, context: str, state: str, action: str | None = None) -> None:
+        """Show, change or remove the badge. It's only a sign for the user, so failures are ignored."""
+        try:
+            await self.call(
+                "script.callFunction",
+                {
+                    "functionDeclaration": BADGE_JS,
+                    "target": {"context": context, "sandbox": "zenpilot"},
+                    "arguments": [_arg(state), {"type": "channel", "value": {"channel": "zenpilot"}}, _arg(action)],
+                    "awaitPromise": False,
+                    "resultOwnership": "none",
+                },
+                timeout=3,
+            )
+        except (BrowserError, BiDiError):
+            pass
+        if state == "off":
+            self._badges.discard(context)
+        else:
+            self._badges.add(context)
+
+    async def mark(self, context: str, action: str | None = None) -> None:
+        """Show the badge on a tab zenpilot uses, saying what it's doing (None keeps the last words)."""
+        await self._badge(context, "stopped" if self.stopped else "on", action)
+
+    def _on_message(self, params: dict) -> None:
+        if params.get("channel") != "zenpilot" or unwrap(params["data"]) != "stop":
+            return
+        # zenpilot's own click can land on the badge when it covers the target; that's not the user.
+        if self._busy_input or time.monotonic() - self._acted < 1:
+            return
+        self.stopped = True
+        for context in list(self._badges):
+            asyncio.get_running_loop().create_task(self._badge(context, "stopped"))
 
     # -- tabs ---------------------------------------------------------------
 
@@ -475,6 +578,7 @@ class Browser:
         async def collect(context: str, base: int):
             nonlocal truncated
             out, trunc = await self._walk(context)
+            self._outlines[context] = [item.line for item, _ in out]
             truncated |= trunc
             for item, frame in out:
                 item.depth += base
@@ -510,13 +614,17 @@ class Browser:
         return title, text or "[no text]"
 
     async def screenshot(self, tab: dict) -> bytes:
-        r = await self.call(
-            "browsingContext.captureScreenshot",
-            {
-                "context": tab["context"],
-                "format": {"type": "image/jpeg", "quality": 0.8},
-            },
-        )
+        await self._badge(tab["context"], "hidden")
+        try:
+            r = await self.call(
+                "browsingContext.captureScreenshot",
+                {
+                    "context": tab["context"],
+                    "format": {"type": "image/jpeg", "quality": 0.8},
+                },
+            )
+        finally:
+            await self.mark(tab["context"])
         return base64.b64decode(r["data"])
 
     # -- input ----------------------------------------------------------------
@@ -593,7 +701,11 @@ class Browser:
         return tag, kind, cover
 
     async def _actions(self, ref: Ref, actions: list[dict]) -> None:
-        await self.call("input.performActions", {"context": ref.context, "actions": actions})
+        self._busy_input = True
+        try:
+            await self.call("input.performActions", {"context": ref.context, "actions": actions})
+        finally:
+            self._busy_input, self._acted = False, time.monotonic()
 
     async def _click(self, ref: Ref) -> None:
         origin = {"type": "element", "element": {"sharedId": ref.shared_id}}
@@ -647,14 +759,53 @@ class Browser:
             for fut in (started, loaded, created):
                 fut.cancel()
 
+    async def _changes(self, ref: Ref) -> str:
+        """What changed in the ref's frame since it was last read, with refs for new controls."""
+        old = self._outlines.get(ref.context)
+        if old is None:
+            return ""
+        try:
+            items = [item for item, _ in (await self._walk(ref.context))[0]]
+            url = await self.url_of(ref.context)
+        except (BrowserError, BiDiError):
+            return ""
+        self._outlines[ref.context] = [it.line for it in items]
+        mark_unique(items, self.top_context(ref))
+        left, now = Counter(old), Counter(it.line for it in items)
+        added = []
+        for it in items:
+            if left[it.line]:
+                left[it.line] -= 1
+            else:
+                added.append(it)
+        removed = []
+        for line in old:
+            if now[line]:
+                now[line] -= 1
+            else:
+                removed.append(line)
+        if not added and not removed:
+            return "\nThe page outline didn't change (yet)."
+        lines = []
+        for it in added[:MAX_ADDED]:
+            if it.shared_id:
+                new = Ref(ref.tab, it.context, it.shared_id, it.key or "", url if it.unique else "", self._session)
+                lines.append(f"+ {self.refs.add(new)} {it.line}")
+            else:
+                lines.append(f"+ {it.line}")
+        lines += [f"- {line}" for line in removed[:MAX_REMOVED]]
+        if more := max(0, len(added) - MAX_ADDED) + max(0, len(removed) - MAX_REMOVED):
+            lines.append(f"[{more} more changes; read_page shows the whole page]")
+        return "\nPage changes:\n" + untrusted("\n".join(lines), url)
+
     async def click(self, key: str) -> str:
         ref, (_, _, cover), note = await self._target(key, self._prepare)
         result = f"Clicked {key}{note}."
         if cover:
             result += f" Note: its center was covered by <{cover}>, which received the click."
         if nav := await self._settle(ref, lambda: self._click(ref)):
-            result += f" {nav}."
-        return result
+            return result + f" {nav}."
+        return result + await self._changes(ref)
 
     async def type(self, key: str, text: str, submit: bool) -> str:
         ref, (tag, kind, _), note = await self._target(key, self._prepare)
@@ -677,10 +828,11 @@ class Browser:
             if ref.key.startswith("combobox"):
                 result += " If it offers a list, use select to pick an option; typing alone may not choose it."
         if submit and (nav := await self._settle(ref, lambda: self._keys(ref, [ENTER]))):
-            result += f" Pressed Enter. {nav}."
-        elif submit:
+            return result + f" Pressed Enter. {nav}."
+        if submit:
             result += " Pressed Enter."
-        return result
+        await asyncio.sleep(0.3)  # suggestion lists and validation messages show up as you type
+        return result + await self._changes(ref)
 
     async def _find_option(self, ref: Ref, option: str, wait: float) -> tuple[str, dict | None, list[str], int]:
         """Look for the option, for up to wait seconds while the list opens or filters."""
@@ -727,7 +879,7 @@ class Browser:
                 f"Clicked the option {names[0]!r} in {key}{note}, but {state}, so the choice may not have been "
                 "committed. Check with read_page or screenshot."
             )
-        return result + (f" {nav}." if nav else "")
+        return result + (f" {nav}." if nav else await self._changes(ref))
 
     async def _wait_still(self, key: str, ref: Ref) -> None:
         """Scroll an option into view once, then wait (up to 2s) until it stops moving."""
