@@ -77,7 +77,7 @@ def run(monkeypatch, tmp_path):
 
 @pytest.fixture
 def report_module(monkeypatch):
-    """Stand-in for zenpilot.report, so these tests don't depend on that module's code."""
+    """Stand-in for zenpilot.run_report, so these tests don't depend on that module's code."""
     calls = []
 
     def write_report(run_dir, summary, records, console, network, har_path, title, zen_version):
@@ -95,9 +95,9 @@ def report_module(monkeypatch):
         )
         return run_dir / "report.html", run_dir / "report.json"
 
-    mod = types.ModuleType("zenpilot.report")
+    mod = types.ModuleType("zenpilot.run_report")
     mod.write_report = write_report
-    monkeypatch.setitem(sys.modules, "zenpilot.report", mod)
+    monkeypatch.setitem(sys.modules, "zenpilot.run_report", mod)
     return calls
 
 

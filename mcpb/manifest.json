@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "zenpilot",
   "display_name": "zenpilot",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Let Claude drive the Zen browser: tabs, reading pages, clicking and typing, behind a site allowlist.",
   "long_description": "On first use, a macOS dialog asks which Zen profile Claude should use: a separate, logged-out profile zenpilot creates, or your own. zenpilot then starts Zen with remote debugging (offering to reopen it if it's already open) and controls it over WebDriver BiDi. Sites must be allowed first: a dialog asks when Claude needs a new one. Requires Zen in /Applications. Settings: ~/.config/zenpilot/config.toml.",
   "author": {
@@ -87,6 +87,10 @@
     {
       "name": "har_export",
       "description": "Save a tab's recorded requests as a HAR 1.2 file."
+    },
+    {
+      "name": "report_limitation",
+      "description": "Tell the zenpilot developers about something you couldn't do in Zen with these tools."
     },
     {
       "name": "javascript_tool",

@@ -1,6 +1,6 @@
 [project]
 name = "zenpilot"
-version = "0.2.4"
+version = "0.3.0"
 description = "MCP server that lets Claude drive a running Zen Browser over WebDriver BiDi"
 readme = "README.md"
 license = "MIT"
