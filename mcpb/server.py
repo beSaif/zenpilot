@@ -11,7 +11,17 @@ uv = os.environ.get("UV") or shutil.which("uv")  # uv run sets UV to itself
 if uv:
     try:
         subprocess.run(
-            [uv, "sync", "--directory", str(Path(__file__).parent), "--upgrade-package", "zenpilot", "--quiet"],
+            [
+                uv,
+                "sync",
+                "--directory",
+                str(Path(__file__).parent),
+                "--upgrade-package",
+                "zenpilot",
+                "--refresh-package",
+                "zenpilot",
+                "--quiet",
+            ],
             capture_output=True,  # stdout is the MCP channel
             timeout=20,
             env={**os.environ, "UV_HTTP_TIMEOUT": "8", "UV_HTTP_RETRIES": "0"},
