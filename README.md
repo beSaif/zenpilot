@@ -26,8 +26,6 @@ You need a Mac with Zen in `/Applications`.
 
 **Claude Desktop:** download `zenpilot-<version>.mcpb` from the
 [latest release](https://github.com/beSaif/zenpilot/releases/latest) and open it. That's it.
-It updates itself to the newest release each time Claude Desktop starts (versions before
-0.4.1 don't, so install it once more if yours is older).
 
 **Claude Code (or both):** with [uv](https://docs.astral.sh/uv/) installed, run:
 
@@ -36,12 +34,12 @@ uv tool install zenpilot
 zenpilot setup
 ```
 
-It updates itself to the newest release each time Claude Code starts it (offline, the
-installed version runs). To stay on one version, install it pinned: `uv tool install zenpilot==0.5.0`.
-
 Setup asks which Zen profile to use and which sites Claude may visit. Then it connects
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
 Desktop afterwards.
+
+Either way, zenpilot updates itself to the newest release each time Claude starts it. To stay
+on one version with uv, install it pinned: `uv tool install zenpilot==0.5.0`.
 
 ## Use it
 
@@ -60,8 +58,8 @@ The first time, a few popups may show up. Only you see them, not Claude:
 Pressing Enter always picks the safe answer.
 
 While Claude works in a tab, an orange glow goes around the page and a zenpilot badge in the
-bottom-left corner says so. Press **Stop** on it and Claude stops: it's told to ask you what to do, and if it tries
-again, a popup asks whether to let it continue.
+bottom-left corner says so. Press **Stop** on it and Claude stops and asks you what to do. If
+it tries again anyway, a popup asks whether to let it continue.
 
 Claude can open, switch and close tabs, go to a URL, read the page, click, type, pick from
 dropdowns, scroll and take screenshots. It can attach files to upload, but only from folders
@@ -86,8 +84,7 @@ and URLs lose their `?query` part. Still, read it before you submit.
 ## Staying safe
 
 - **Allowlist.** Claude only works on sites you've allowed. Add one with
-  `zenpilot allow github.com`. `zenpilot allow` lists them, including the ones allowed for
-  12 hours, and `--remove` takes them off.
+  `zenpilot allow github.com`.
 - **Stick to the `zenpilot` profile if you can.** It's logged out of everything. On your main
   profile, a shady page could try to trick Claude into doing stuff in your accounts, so only
   allow sites you trust.
@@ -136,9 +133,7 @@ once `upload_dirs` isn't empty, and it takes effect the next time Zen starts.
 ## Good to know
 
 - Only one Claude can drive Zen at a time. zenpilot lets go after 2 minutes of doing
-  nothing, so Claude Desktop and Claude Code can take turns. Tabs keep their ids, and Claude's
-  references to buttons and fields still work afterwards, as long as each is the only one with
-  its name on the page.
+  nothing, so Claude Desktop and Claude Code can take turns.
 - Zen can be hidden or behind other windows. It still works.
 - Zen loads restored tabs lazily, so Claude only sees an old tab once you've opened it.
 - Stuck? Run `zenpilot doctor`. If Zen says it already has a session after a crash, restart Zen.
@@ -152,9 +147,6 @@ uv run pytest -m "not integration"   # unit tests
 uv run pytest                        # all tests, needs Zen running (zenpilot launch)
 ZENPILOT_TEST_PORT=9333 uv run pytest   # against a second Zen on a test profile
 ```
-
-Pushing a `v*` tag that matches `pyproject.toml` publishes to PyPI and makes a GitHub
-release with the `.mcpb`.
 
 ## License
 
