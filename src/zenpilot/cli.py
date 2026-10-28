@@ -1,17 +1,19 @@
-"""Command line: with no command, the MCP server; otherwise setup, launch, doctor and allow."""
+"""Command line: with no command, the MCP server; otherwise setup, launch, doctor, allow and log."""
 
 import argparse
 import asyncio
+import importlib.metadata
 import json
 import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import report as reports
 from . import zen
-from .safety import CONFIG_PATH, load_config, normalize_domain, set_config_value
+from .safety import CONFIG_PATH, grants, load_config, normalize_domain, revoke, set_config_value
 
 NAME = "zenpilot"
 DESKTOP_CONFIG = Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
@@ -113,7 +115,7 @@ def setup(args) -> int:
     existed = zen.profile_path(name) is not None
     path = zen.resolve(name)  # creates only the dedicated profile, so a typo can't make a new one
     print(f"✓ Zen profile '{name}'" + ("" if existed else " created"))
-    added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF])
+    added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF, *_prefs(cfg)])
     print(f"✓ Set {', '.join(added)} in its user.js" if added else "✓ Its user.js already has zenpilot's prefs")
     if name != cfg.profile:
         set_config_value("profile", name)
@@ -130,15 +132,19 @@ def setup(args) -> int:
         print(register_desktop(cmd))
     if args.no_launch:
         return 0
-    if zen.launch(name, cfg.port, _yes if interactive else None):
+    if zen.launch(name, cfg.port, _yes if interactive else None, prefs=_prefs(cfg)):
         print(f"✓ Started Zen on profile '{name}'")
     return 0 if asyncio.run(_print_tabs(cfg.port)) else 1
+
+
+def _prefs(cfg) -> list[tuple[str, str]]:
+    return [zen.UPLOAD_PREF] if cfg.upload_dirs else []
 
 
 def launch(args) -> int:
     cfg = load_config()
     name = args.profile or cfg.profile or zen.DEFAULT_PROFILE
-    if zen.launch(name, cfg.port, _yes if _interactive() else None):
+    if zen.launch(name, cfg.port, _yes if _interactive() else None, prefs=_prefs(cfg)):
         print(f"Started Zen on profile '{name}' with remote debugging on port {cfg.port}.")
     else:
         print(f"Something is already listening on port {cfg.port}, probably Zen with remote debugging.")
@@ -162,6 +168,8 @@ def doctor(args) -> int:
     modes = [m for m, on in [("read-only", cfg.read_only), ("ALL SITES ALLOWED", cfg.allow_all_sites)] if on]
     print(f"✓ Config {CONFIG_PATH}" + (f" ({', '.join(modes)})" if modes else ""))
     print(f"  allowlist: {', '.join(cfg.allowlist) or '(empty)'}")
+    if granted := _grants():
+        print(f"  for now: {granted}")
     report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
     path = zen.profile_path(cfg.profile) if cfg.profile else None
     if cfg.profile is None:
@@ -174,8 +182,16 @@ def doctor(args) -> int:
         )
         seen = {**zen.prefs(path, "prefs.js"), **zen.prefs(path)}.get(zen.WELCOME_PREF[0]) == "true"
         report(seen, "Welcome screen dismissed", "Zen's welcome screen isn't dismissed yet. Run `zenpilot setup`.")
+        if cfg.upload_dirs:
+            report(
+                zen.prefs(path).get(zen.UPLOAD_PREF[0]) == "true",
+                f"{zen.UPLOAD_PREF[0]} is on, so uploads work",
+                f"Uploads need {zen.UPLOAD_PREF[0]} in its user.js. Run `zenpilot setup`, then restart Zen.",
+            )
     if zen.port_open(cfg.port):
         problems += not asyncio.run(_print_tabs(cfg.port))
+    elif path and zen.holder(path):
+        report(False, "", f"Zen is open on '{cfg.profile}' without remote debugging. `zenpilot launch` reopens it.")
     elif cfg.auto_launch:
         print(f"· Zen isn't listening on port {cfg.port}; zenpilot will start it on the first tool call")
     else:
@@ -193,12 +209,27 @@ def allow(args) -> int:
         raise ValueError("not a domain: " + args.domains[domains.index("")])
     if args.remove:
         new = [d for d in cfg.allowlist if d not in domains]
+        if set(domains) & set(grants()):
+            revoke(domains)
     else:
         new = list(dict.fromkeys(cfg.allowlist + domains))
     if new != cfg.allowlist:
         set_config_value("allowlist", new)
     print(f"Allowlist: {', '.join(new) or '(empty)'}")
+    if granted := _grants():
+        print(f"For now: {granted}")
     return 0
+
+
+def _grants() -> str:
+    """Sites allowed for a while from the dialog, with when that ends."""
+    today = datetime.now().date()
+
+    def until(ts: float) -> str:
+        end = datetime.fromtimestamp(ts)
+        return end.strftime("%H:%M" if end.date() == today else "%a %H:%M")
+
+    return ", ".join(f"{d} (until {until(ts)})" for d, ts in sorted(grants().items()))
 
 
 def report(args) -> int:
@@ -224,6 +255,61 @@ def report(args) -> int:
     return 0
 
 
+def _target(r: dict) -> str:
+    """What a logged call acted on, in a few words."""
+    p = r.get("params", {})
+    if "ref" not in p:
+        return p.get("url") or p.get("tab_id") or ""
+    target = f"{p['ref']} {p.get('element', '')}".strip()
+    return target + (": " + ", ".join(Path(f).name for f in p["paths"]) if p.get("paths") else "")
+
+
+def log(args) -> int:
+    path = load_config().audit_log
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        print(f"No audit log at {path} yet.")
+        return 0
+    records = []
+    for line in lines:
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    if args.errors:
+        records = [r for r in records if not r.get("ok")]
+    for r in records[-args.n :] if args.n else records:
+        when = datetime.fromisoformat(r["ts"]).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        target = _target(r)
+        target = target if len(target) <= 60 else target[:59] + "…"
+        status = "ok" if r.get("ok") else "✗ " + r.get("error", "").split(". ")[0]
+        print(f"{when}  {r['tool']:<10} {target:<60}  {r.get('domain') or '':<24} {status}")
+    return 0
+
+
+def _update() -> None:
+    """Upgrade a `uv tool install` of zenpilot before serving, and restart into the new version.
+
+    Offline or slow, the installed version runs. A clone, the Desktop extension (which updates
+    itself) or a version pinned at install time is left alone.
+    """
+    data = Path(os.environ.get("XDG_DATA_HOME") or "~/.local/share").expanduser()
+    tools = Path(os.environ.get("UV_TOOL_DIR") or data / "uv/tools").expanduser().resolve()
+    uv = shutil.which("uv")
+    if os.environ.get("ZENPILOT_UPDATED") or not uv or Path(sys.prefix).resolve() != tools / NAME:
+        return
+    before = importlib.metadata.version(NAME)
+    env = {**os.environ, "UV_HTTP_TIMEOUT": "8", "UV_HTTP_RETRIES": "0"}
+    try:  # its output would corrupt the MCP channel on stdout
+        subprocess.run([uv, "tool", "upgrade", NAME], capture_output=True, timeout=20, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if importlib.metadata.version(NAME) != before:
+        os.environ["ZENPILOT_UPDATED"] = "1"  # once per start
+        os.execv(sys.argv[0], sys.argv)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog=NAME, description="With no command, runs the MCP server that Claude starts.")
     parser.add_argument("--check", action="store_true", help=argparse.SUPPRESS)  # old name for doctor
@@ -237,15 +323,23 @@ def main() -> None:
     sub.add_parser("doctor", help="check each part of the setup")
     p = sub.add_parser("allow", help="add sites to the allowlist; with no sites, show it")
     p.add_argument("domains", nargs="*", metavar="domain")
-    p.add_argument("--remove", action="store_true", help="remove the sites instead")
+    p.add_argument("--remove", action="store_true", help="take the sites off, including ones allowed for a while")
     p = sub.add_parser("report", help="show the latest session report of what Claude couldn't do")
     p.add_argument("file", nargs="?", help="a report to use instead of the latest")
     p.add_argument("--issue", action="store_true", help="open a GitHub issue prefilled with it")
     p.add_argument("--list", action="store_true", help="list all reports, newest first")
+    p = sub.add_parser("log", help="print the audit log as a timeline")
+    p.add_argument("-n", type=int, default=50, help="show the last N calls (default 50, 0 for all)")
+    p.add_argument("--errors", action="store_true", help="only failed calls")
     args = parser.parse_args()
 
     command = "doctor" if args.check else args.command
+    if command is None and sys.stdin.isatty():  # a person typed `zenpilot`; the server would just wait
+        parser.print_help()
+        print("\nClaude starts zenpilot itself. To set it up, run `zenpilot setup`.")
+        return
     if command is None:
+        _update()
         import anyio
 
         from .server import serve
@@ -253,7 +347,7 @@ def main() -> None:
         anyio.run(serve)
         return
     try:
-        commands = {"setup": setup, "launch": launch, "doctor": doctor, "allow": allow, "report": report}
+        commands = {"setup": setup, "launch": launch, "doctor": doctor, "allow": allow, "report": report, "log": log}
         sys.exit(commands[command](args))
     except (zen.ZenError, ValueError, OSError, subprocess.SubprocessError) as e:
         sys.exit(f"zenpilot: {e}")

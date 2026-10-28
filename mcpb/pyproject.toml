@@ -1,6 +1,8 @@
-# Claude Desktop extension: Claude Desktop installs these dependencies with uv and runs server.py.
+# Claude Desktop extension: Claude Desktop installs these dependencies with uv and runs server.py,
+# which updates zenpilot to the newest release on each start. The floor stays put, so installing
+# never waits for uv's cached PyPI index to list a release that just came out.
 [project]
 name = "zenpilot-mcpb"
-version = "0.3.0"
+version = "0.5.1"
 requires-python = ">=3.12"
-dependencies = ["zenpilot==0.3.0"]
+dependencies = ["zenpilot>=0.4.1"]

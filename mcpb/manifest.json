@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "zenpilot",
   "display_name": "zenpilot",
-  "version": "0.3.0",
+  "version": "0.5.1",
   "description": "Let Claude drive the Zen browser: tabs, reading pages, clicking and typing, behind a site allowlist.",
   "long_description": "On first use, a macOS dialog asks which Zen profile Claude should use: a separate, logged-out profile zenpilot creates, or your own. zenpilot then starts Zen with remote debugging (offering to reopen it if it's already open) and controls it over WebDriver BiDi. Sites must be allowed first: a dialog asks when Claude needs a new one. Requires Zen in /Applications. Settings: ~/.config/zenpilot/config.toml.",
   "author": {
@@ -30,7 +30,7 @@
   "tools": [
     {
       "name": "list_tabs",
-      "description": "List open tabs with ids. The active tab is marked with *."
+      "description": "List open tabs with ids. The active tab is marked with *. A tab keeps its id while it's open."
     },
     {
       "name": "new_tab",
@@ -59,6 +59,14 @@
     {
       "name": "type",
       "description": "Replace the content of a field (by ref) with text using real key events."
+    },
+    {
+      "name": "select",
+      "description": "Choose an option in a dropdown (by ref): a <select>, a combobox or a listbox."
+    },
+    {
+      "name": "upload",
+      "description": "Attach files to a file input (by ref), as if the user picked them."
     },
     {
       "name": "scroll",

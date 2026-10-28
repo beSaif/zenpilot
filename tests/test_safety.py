@@ -1,10 +1,11 @@
 """Allowlist, config and untrusted-content fencing."""
 
 import json
+from pathlib import Path
 
 import pytest
 
-from zenpilot.safety import Blocked, Config, audit, check_url, domain_of, load_config, untrusted
+from zenpilot.safety import Blocked, Config, audit, check_upload, check_url, domain_of, load_config, untrusted
 
 
 def cfg(tmp_path, allowlist=("example.com", "localhost")):
@@ -117,3 +118,57 @@ def test_audit_appends_jsonl(tmp_path):
     lines = [json.loads(line) for line in c.audit_log.read_text().splitlines()]
     assert [r["tool"] for r in lines] == ["click", "navigate"]
     assert lines[0]["ms"] == 12.3 and lines[1]["error"] == "blocked"
+
+
+def test_uploads_are_off_until_folders_are_listed(tmp_path):
+    (tmp_path / "cv.pdf").write_text("%PDF")
+    with pytest.raises(Blocked, match="Uploads are off"):
+        check_upload(str(tmp_path / "cv.pdf"), cfg(tmp_path))
+
+
+def test_uploads_only_from_listed_folders(tmp_path):
+    docs, other = tmp_path / "docs", tmp_path / "other"
+    (docs / "sub").mkdir(parents=True)
+    other.mkdir()
+    (docs / "sub" / "cv.pdf").write_text("%PDF")
+    (other / "id.pdf").write_text("%PDF")
+    (docs / "link.pdf").symlink_to(other / "id.pdf")
+    c = cfg(tmp_path)
+    c.upload_dirs = [docs.resolve()]
+    assert check_upload(str(docs / "sub" / "cv.pdf"), c) == str((docs / "sub" / "cv.pdf").resolve())
+    for bad, why in [
+        (other / "id.pdf", "isn't in a folder"),
+        (docs / "link.pdf", "isn't in a folder"),  # a symlink can't lead out
+        (docs / "sub" / ".." / ".." / "other" / "id.pdf", "isn't in a folder"),
+        (docs / "missing.pdf", "doesn't exist"),
+        (docs / "sub", "isn't a file"),
+        (Path("docs/sub/cv.pdf"), "absolute"),
+    ]:
+        with pytest.raises(Blocked, match=why):
+            check_upload(str(bad), c)
+
+
+def test_load_config_upload_dirs(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('upload_dirs = ["~/Documents/Applications"]\n')
+    assert load_config(path).upload_dirs == [(Path.home() / "Documents/Applications").resolve()]
+    path.write_text('upload_dirs = "~/Documents"\n')
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_default_config_documents_the_new_options(tmp_path):
+    c = load_config(tmp_path / "config.toml")
+    assert c.upload_dirs == [] and c.audit_redact_urls is False
+    text = (tmp_path / "config.toml").read_text()
+    assert "upload_dirs = []" in text and "audit_redact_urls = false" in text
+
+
+def test_audit_can_leave_out_query_strings(tmp_path):
+    c = cfg(tmp_path)
+    c.audit_redact_urls = True
+    url = "https://x.com/intent/post?text=my%20address#top"
+    audit(c, "navigate", {"url": url, "tab_id": "t1"}, "x.com", False, 1, f"Now at {url}. Blocked.")
+    record = json.loads(c.audit_log.read_text())
+    assert record["params"] == {"url": "https://x.com/intent/post", "tab_id": "t1"}
+    assert record["error"] == "Now at https://x.com/intent/post Blocked."

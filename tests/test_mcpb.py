@@ -14,7 +14,8 @@ async def test_bundle_matches_package():
     manifest = json.loads((ROOT / "mcpb/manifest.json").read_text())
     bundle = tomllib.loads((ROOT / "mcpb/pyproject.toml").read_text())["project"]
     assert manifest["version"] == bundle["version"] == version
-    assert bundle["dependencies"] == [f"zenpilot=={version}"]
+    # A fixed floor, not a pin: the bundle's server.py updates zenpilot on each start.
+    assert bundle["dependencies"] == ["zenpilot>=0.4.1"]
     server = json.loads((ROOT / "server.json").read_text())
     assert server["version"] == server["packages"][0]["version"] == version
     assert [t["name"] for t in manifest["tools"]] == [t.name for t in await mcp.list_tools()]

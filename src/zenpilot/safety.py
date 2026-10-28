@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,6 +11,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 CONFIG_PATH = Path(os.environ.get("ZENPILOT_CONFIG", "~/.config/zenpilot/config.toml")).expanduser()
+# Tab ids and temporary site approvals, shared by every zenpilot process (Claude Desktop, Claude Code, ...).
+STATE_DIR = Path(os.environ.get("ZENPILOT_STATE", "~/.local/state/zenpilot")).expanduser()
 
 DEFAULT_CONFIG = """\
 # zenpilot config. Changes apply on the next tool call; no restart needed.
@@ -49,7 +52,8 @@ auto_launch = true
 # false: blocked sites just fail, and Zen must be started by hand.
 prompts = true
 
-# Every tool call is appended here as one JSON line.
+# Every tool call is appended here as one JSON line. Typed text is never logged,
+# only its length. `zenpilot log` prints it as a timeline.
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 
 # file_upload may only send files from ~/.local/state/zenpilot/uploads or from these folders.
@@ -57,6 +61,14 @@ upload_dirs = []
 # A session with failed or slow tool calls, or things Claude couldn't do, leaves a report
 # here. `zenpilot report --issue` turns the latest into a GitHub issue.
 report_dir = "~/.local/state/zenpilot/reports"
+
+# true leaves ?query and #fragment out of URLs in the audit log. They can hold
+# search terms, composed post text and session tokens.
+audit_redact_urls = false
+
+# Folders whose files the upload tool may put into a page's file inputs, e.g.
+# ["~/Documents/Applications"]. Subfolders count too. Empty: uploads are off.
+upload_dirs = []
 """
 
 # Pages that carry no site content and inherit nothing worth protecting.
@@ -64,9 +76,10 @@ ALWAYS_ALLOWED = {"about:blank", "about:srcdoc", "about:newtab", "about:home"}
 
 
 class Blocked(Exception):
-    def __init__(self, message: str, domain: str | None = None):
+    def __init__(self, message: str, domain: str | None = None, url: str = ""):
         super().__init__(message)
         self.domain = domain  # set when adding this domain to the allowlist would allow it
+        self.url = url
 
 
 @dataclass
@@ -84,6 +97,8 @@ class Config:
     capture_actions: bool = False
     upload_dirs: list[str] = field(default_factory=list)  # extra folders file_upload may read from
     report_dir: Path = Path("~/.local/state/zenpilot/reports").expanduser()
+    audit_redact_urls: bool = False
+    upload_dirs: list[Path] = field(default_factory=list)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -112,6 +127,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         capture_actions=raw.get("capture_actions", defaults["capture_actions"]) is True,
         upload_dirs=[d for d in upload_dirs if d.strip()],
         report_dir=Path(raw.get("report_dir", defaults["report_dir"])).expanduser(),
+        audit_redact_urls=raw.get("audit_redact_urls", False) is True,
+        upload_dirs=[Path(d).expanduser().resolve() for d in upload_dirs if d.strip()],
     )
 
 
@@ -154,7 +171,57 @@ def check_url(url: str, cfg: Config) -> str:
         f"Domain '{domain}' is not on the zenpilot allowlist. "
         f"If they want you to use it, ask the user to run `zenpilot allow {domain}`.",
         domain,
+        url,
     )
+
+
+def check_upload(path: str, cfg: Config) -> str:
+    """Resolve a file for upload, or raise Blocked unless it's inside one of upload_dirs."""
+    if not cfg.upload_dirs:
+        raise Blocked(f"Uploads are off. Ask the user to add the folder with the file to upload_dirs in {CONFIG_PATH}.")
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        raise Blocked(f"'{path}' isn't an absolute path.")
+    real = p.resolve()  # follows symlinks, so a link can't point outside the folders
+    if not any(real.is_relative_to(d) for d in cfg.upload_dirs):
+        dirs = ", ".join(str(d) for d in cfg.upload_dirs)
+        raise Blocked(f"'{path}' isn't in a folder zenpilot may upload from ({dirs}). Ask the user.")
+    if not real.is_file():
+        raise Blocked(f"'{path}' doesn't exist or isn't a file.")
+    return str(real)
+
+
+def load_state(name: str) -> dict:
+    try:
+        return json.loads((STATE_DIR / f"{name}.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(name: str, data: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_DIR / f".{name}.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data))
+    tmp.replace(STATE_DIR / f"{name}.json")
+
+
+# "Allow for 12 Hours" answers: {domain: expiry timestamp}, in a state file so they survive a
+# restart of the server (a resumed Claude Code session is a new process) and apply to every zenpilot.
+GRANT_HOURS = 12
+
+
+def grants() -> dict[str, float]:
+    """Domains allowed for a while, with when that ends."""
+    now = time.time()
+    return {d: until for d, until in load_state("grants").items() if isinstance(until, (int, float)) and until > now}
+
+
+def grant(domain: str) -> None:
+    save_state("grants", grants() | {domain: time.time() + GRANT_HOURS * 3600})
+
+
+def revoke(domains: list[str]) -> None:
+    save_state("grants", {d: until for d, until in grants().items() if d not in domains})
 
 
 _TAG = "untrusted_web_content"
@@ -171,7 +238,13 @@ def untrusted(text: str, source: str) -> str:
     )
 
 
+_URL_TAIL = re.compile(r"([a-z]+://[^\s?#]*)[?#][^\s]*")
+
+
 def audit(cfg: Config, tool: str, params: dict, domain: str | None, ok: bool, ms: float, error: str | None = None):
+    if cfg.audit_redact_urls:
+        params = {k: _URL_TAIL.sub(r"\1", v) if isinstance(v, str) else v for k, v in params.items()}
+        error = error and _URL_TAIL.sub(r"\1", error)
     record = {
         "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "tool": tool,

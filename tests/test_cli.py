@@ -1,11 +1,12 @@
 """Profile handling, config editing and client registration, without touching the real Zen or Claude."""
 
 import json
+import subprocess
 import sys
 
 import pytest
 
-from zenpilot import cli, zen
+from zenpilot import cli, safety, zen
 from zenpilot.safety import load_config, set_config_value
 
 
@@ -115,6 +116,27 @@ def test_allow(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.endswith("Allowlist: localhost, github.com, example.org\n")
 
 
+def test_allow_lists_and_removes_sites_allowed_for_a_while(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "load_config", lambda: load_config(path))
+    monkeypatch.setattr(cli, "set_config_value", lambda k, v: set_config_value(k, v, path))
+    safety.grant("jobs.example.org")
+    args = type("Args", (), {"domains": [], "remove": False})
+    cli.allow(args)
+    assert "For now: jobs.example.org (until " in capsys.readouterr().out
+    args.domains, args.remove = ["jobs.example.org"], True
+    cli.allow(args)
+    assert safety.grants() == {} and "For now" not in capsys.readouterr().out
+
+
+def test_zenpilot_in_a_terminal_prints_help(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["zenpilot"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_update", lambda: pytest.fail("would start the server"))
+    cli.main()
+    assert "zenpilot setup" in capsys.readouterr().out
+
+
 def test_server_command(tmp_path, monkeypatch):
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setattr(sys, "argv", ["/home/me/.local/bin/zenpilot", "setup"])
@@ -133,3 +155,74 @@ def test_register_desktop_keeps_other_settings(tmp_path):
     assert data["preferences"] == {"a": 1} and data["mcpServers"]["other"] == {"command": "x"}
     assert data["mcpServers"]["zenpilot"] == {"command": "/opt/bin/uvx", "args": ["zenpilot"]}
     assert "not installed" in cli.register_desktop(["x"], tmp_path / "missing/config.json")
+
+
+def test_log_prints_a_timeline(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.toml"
+    log = tmp_path / "audit.jsonl"
+    path.write_text(f'audit_log = "{log}"\n')
+    monkeypatch.setattr(cli, "load_config", lambda: load_config(path))
+    site = "career55.sapsf.eu"
+    calls = [
+        {"tool": "click", "params": {"ref": "r55", "element": 'button "Next"'}, "domain": site, "ok": True},
+        {"tool": "upload", "params": {"ref": "r9", "paths": ["/d/cv.pdf"], "element": 'file "CV"'}, "domain": site},
+        {"tool": "read_page", "params": {"tab_id": "t5"}, "ok": False, "error": "Unknown tab id 't5'. Call list_tabs."},
+    ]
+    lines = [json.dumps({"ts": f"2026-10-28T06:4{i}:00+00:00", "ms": 1, "ok": True} | c) for i, c in enumerate(calls)]
+    log.write_text("\n".join([lines[0], "not json", *lines[1:]]) + "\n")
+    cli.log(type("Args", (), {"n": 50, "errors": False}))
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 3
+    assert 'click      r55 button "Next"' in out[0] and out[0].rstrip().endswith(f"{site:<24} ok")
+    assert 'upload     r9 file "CV": cv.pdf' in out[1]
+    assert out[2].endswith("✗ Unknown tab id 't5'")
+    cli.log(type("Args", (), {"n": 1, "errors": True}))
+    assert capsys.readouterr().out.count("\n") == 1
+
+
+@pytest.fixture
+def tool_env(tmp_path, monkeypatch):
+    """zenpilot running from a `uv tool install` of 0.4.1, with uv, the upgrade and the restart faked."""
+    tools = tmp_path / "tools"
+    monkeypatch.setenv("UV_TOOL_DIR", str(tools))
+    monkeypatch.delenv("ZENPILOT_UPDATED", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(tools / "zenpilot"))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/opt/bin/uv")
+    env = {"installed": "0.4.1", "on_pypi": "0.4.1", "calls": []}
+    monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: env["installed"])
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: env["calls"].append(("restart", path)))
+
+    def run(cmd, **kw):
+        env["calls"].append(("run", cmd[1:]))
+        env["installed"] = env["on_pypi"]
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    return env
+
+
+def test_update_restarts_into_a_newer_version(tool_env):
+    tool_env["on_pypi"] = "0.4.3"
+    cli._update()
+    assert tool_env["calls"] == [("run", ["tool", "upgrade", "zenpilot"]), ("restart", sys.argv[0])]
+    assert cli.os.environ["ZENPILOT_UPDATED"] == "1"  # the restarted one doesn't check again
+
+
+def test_update_runs_the_installed_version_when_nothing_is_newer(tool_env):
+    cli._update()
+    assert tool_env["calls"] == [("run", ["tool", "upgrade", "zenpilot"])]
+
+
+def test_update_leaves_a_clone_or_the_desktop_extension_alone(tool_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "zenpilot-clone/.venv"))
+    cli._update()
+    assert tool_env["calls"] == []
+
+
+def test_update_offline_or_slow_runs_the_installed_version(tool_env, monkeypatch):
+    def slow(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 20)
+
+    monkeypatch.setattr(cli.subprocess, "run", slow)
+    cli._update()
+    assert tool_env["calls"] == [] and tool_env["installed"] == "0.4.1"

@@ -1,6 +1,7 @@
 // Runs in the page via script.callFunction. Walks the rendered tree (including
 // open shadow roots) and returns [items, truncated], where each item is
-// [depth, line, node|null, frameWindow|null]. Nodes come back as BiDi sharedIds.
+// [depth, line, node|null, frameWindow|null, key|null]. Nodes come back as BiDi
+// sharedIds; key is a control's role and name, which find it again after a re-render.
 (maxItems) => {
   const INTERACTIVE = [
     "a[href]", "button", "input:not([type=hidden])", "select", "textarea", "summary",
@@ -16,6 +17,9 @@
   const INPUT_ROLES = { checkbox: "checkbox", radio: "radio", button: "button", submit: "button",
     reset: "button", image: "button", range: "slider", search: "searchbox", file: "file" };
   const TOGGLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"]);
+  // Open dropdowns can hold hundreds of options; show this many per list, plus the selected ones.
+  const MAX_OPTIONS = 12;
+  const LISTS = "[role=listbox],[role=tree],[role=menu],[role=grid]";
 
   const clip = (s, n) => {
     s = (s || "").replace(/\s+/g, " ").trim();
@@ -62,11 +66,24 @@
   const hasInner = new Set();
   const pointy = new Set();
   const standIn = new Map();
+  // A combobox's popup is often rendered at the end of <body>; it's shown under its combobox.
+  const popupOwner = new Map();
+  const popupsOf = new Map();
   const roots = [document];
   for (let i = 0; i < roots.length; i++) {
     for (const el of roots[i].querySelectorAll("*")) {
       if (el.id === "__zenpilot_overlay") continue;  // action overlay, drawn by overlay.js
       if (el.shadowRoot) roots.push(el.shadowRoot);
+      if (el.getAttribute("role") === "combobox") {
+        const ids = `${el.getAttribute("aria-controls") || ""} ${el.getAttribute("aria-owns") || ""}`;
+        for (const id of ids.split(/\s+/).filter(Boolean)) {
+          const p = el.getRootNode().getElementById?.(id);
+          if (!p || p.contains(el) || el.contains(p) || popupOwner.has(p)) continue;
+          if (!p.matches(LISTS + ",[role=dialog]") && !p.querySelector("[role=option]")) continue;  // not a popup, e.g. a results region
+          popupOwner.set(p, el);
+          popupsOf.set(el, [...(popupsOf.get(el) || []), p]);
+        }
+      }
       let interesting = el.shadowRoot || el.tagName === "IFRAME" || el.tagName === "FRAME";
       if (el.matches(INTERACTIVE)) {
         interesting = true;
@@ -105,8 +122,15 @@
     if (!n && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) {
       n = el.placeholder || el.title || (["submit", "button", "reset"].includes(el.type) ? el.value : "") || el.alt;
     }
-    if (!n) n = el.innerText || el.title || el.querySelector?.("img[alt]")?.alt || standIn?.innerText || "";
+    // An editable field's text is its value (maybe what was typed), and a list's is its options.
+    if (!n && !el.isContentEditable && !el.matches(LISTS)) {
+      n = el.innerText || el.title || el.querySelector?.("img[alt]")?.alt || standIn?.innerText || "";
+    }
     return clip(n, 80);
+  };
+  const ident = (el, standIn) => {
+    const n = name(el, standIn);
+    return role(el) + (n ? " " + q(n) : "");
   };
 
   const describe = (el, standIn) => {
@@ -117,9 +141,10 @@
     if (r === "textbox" && el.tagName === "INPUT" && el.type !== "text") line += ` type=${el.type}`;
     if (el.tagName === "SELECT") {
       line += " value=" + q(clip(el.selectedOptions[0]?.text, 40));
-    } else if ((r === "textbox" || r === "searchbox") && el.value) {
+    } else if ((r === "textbox" || r === "searchbox" || r === "combobox") && el.value) {
       line += " value=" + (el.type === "password" ? '"•••"' : q(clip(el.value, 60)));
-    } else if (el.isContentEditable && el.innerText.trim() && n !== clip(el.innerText, 80)) {
+    } else if ((el.isContentEditable || (r === "combobox" && !("value" in el))) && el.innerText.trim() &&
+        n !== clip(el.innerText, 80)) {
       line += " value=" + q(clip(el.innerText, 60));
     }
     const ariaChecked = el.getAttribute("aria-checked");
@@ -142,10 +167,35 @@
 
   const out = [];
   let truncated = false;
-  const emit = (depth, line, node = null, frame = null) => {
+  const emit = (depth, line, node = null, frame = null, key = null) => {
     if (out.length >= maxItems) { truncated = true; return false; }
-    out.push([depth, line, node, frame]);
+    out.push([depth, line, node, frame, key]);
     return true;
+  };
+
+  // list -> [options shown, options left out, depth]
+  const lists = new Map();
+  const leaveOut = (el, depth) => {
+    const r = role(el);
+    if (r !== "option" && r !== "treeitem") return false;
+    const list = parentOf(el)?.closest?.(LISTS) || parentOf(el);
+    const n = lists.get(list) || [0, 0, depth];
+    lists.set(list, n);
+    if (n[0] >= MAX_OPTIONS && el.getAttribute("aria-selected") !== "true") {
+      n[1]++;
+      return true;
+    }
+    n[0]++;
+    return false;
+  };
+  const placed = new Set();  // combobox popups already shown
+  let placing = null;  // the popup being walked under its combobox
+  const place = (p, depth) => {
+    if (placed.has(p)) return;
+    placed.add(p);
+    placing = p;
+    walk(p, depth);
+    placing = null;
   };
 
   const children = (el) => {
@@ -159,6 +209,14 @@
 
   // named: the name of the control we're inside, whose text needn't be repeated.
   const walk = (node, depth, named = "") => {
+    visit(node, depth, named);
+    const n = lists.get(node);
+    if (n?.[1]) {
+      emit(n[2], `[${n[1]} more options; select picks one by name]`);
+      n[1] = 0;
+    }
+  };
+  const visit = (node, depth, named) => {
     if (truncated) return;
     if (node.nodeType === 3) {
       const t = clip(node.data, 100);
@@ -168,10 +226,14 @@
     }
     if (node.nodeType !== 1) return;
     const el = node;
-    if (SKIP.has(el.tagName) || el.id === "__zenpilot_overlay" || el.getAttribute("aria-hidden") === "true") return;
+    if (SKIP.has(el.tagName) || el.getAttribute("aria-hidden") === "true") return;
+    if (popupOwner.has(el)) {
+      if (el !== placing) return;  // shown under its combobox instead
+      placing = null;
+    }
     const s = standIn.get(el);
     if (s) {
-      if (!s.matches(INTERACTIVE)) emit(depth, describe(el, s), s);  // else it reports itself
+      if (!s.matches(INTERACTIVE)) emit(depth, describe(el, s), s, null, ident(el, s));  // else it reports itself
       return;
     }
     if (!rendered(el)) return;
@@ -181,8 +243,11 @@
       return;
     }
     if (isControl(el)) {
-      if (hasBox(el)) emit(depth, describe(el), el);
-      if (hasInner.has(el)) for (const c of children(el)) walk(c, depth + 1, name(el));
+      if (leaveOut(el, depth)) return;
+      if (hasBox(el)) emit(depth, describe(el), el, null, ident(el));
+      // An option's inner controls (often a menuitem with the same text) are the option.
+      if (hasInner.has(el) && role(el) !== "option") for (const c of children(el)) walk(c, depth + 1, name(el));
+      for (const p of popupsOf.get(el) || []) place(p, depth + 1);
       return;
     }
     if (/^H[1-6]$/.test(el.tagName)) {
@@ -221,5 +286,6 @@
   };
 
   walk(document.body || document.documentElement, 0);
+  for (const p of popupOwner.keys()) place(p, 0);  // popups whose combobox isn't shown
   return [out, truncated];
 }

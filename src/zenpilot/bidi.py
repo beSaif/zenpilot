@@ -77,16 +77,9 @@ class BiDi:
         self._listeners.append((method, predicate, fut))
         return fut
 
-    def on(self, method: str, callback: Callable[[dict], None]) -> Callable[[], None]:
-        """Call `callback(params)` for every event with this method. Returns an unsubscribe function."""
-        self._handlers.setdefault(method, []).append(callback)
-
-        def unsubscribe() -> None:
-            handlers = self._handlers.get(method, [])
-            if callback in handlers:
-                handlers.remove(callback)
-
-        return unsubscribe
+    def on(self, method: str, handler: Callable[[dict], None]) -> None:
+        """Call handler(params) on every event of this method, for as long as the connection lasts."""
+        self._handlers.setdefault(method, []).append(handler)
 
     async def _read_loop(self) -> None:
         try:
@@ -105,11 +98,8 @@ class BiDi:
     def _dispatch(self, msg: dict) -> None:
         if msg.get("type") == "event":
             method, params = msg["method"], msg["params"]
-            for callback in list(self._handlers.get(method, [])):
-                try:
-                    callback(params)
-                except Exception:
-                    log.exception("BiDi handler for %s failed", method)
+            for handler in self._handlers.get(method, []):
+                handler(params)
             keep = []
             for listener in self._listeners:
                 m, pred, fut = listener

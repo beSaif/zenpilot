@@ -19,6 +19,9 @@ DEFAULT_PROFILE = "zenpilot"  # the dedicated, logged-out profile zenpilot creat
 SAFE_PREF = ("remote.prefs.recommended", "false")
 # Until Zen's welcome screen is dismissed, pages have a 0x0 viewport.
 WELCOME_PREF = ("zen.welcome-screen.seen", "true")
+# The one recommended automation pref uploads need: input.setFiles builds File objects in the
+# page's process. Only written once the user lists upload_dirs.
+UPLOAD_PREF = ("dom.file.createInChild", "true")
 
 _PREF_RE = re.compile(r'^\s*user_pref\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;', re.M)
 
@@ -128,7 +131,13 @@ def quit_zen(pid: int, profile: Path, timeout: float = 30) -> None:
         time.sleep(0.25)
 
 
-def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None = None, timeout: float = 20) -> bool:
+def launch(
+    name: str,
+    port: int,
+    confirm_relaunch: Callable[[str], bool] | None = None,
+    timeout: float = 20,
+    prefs: list[tuple[str, str]] | None = None,
+) -> bool:
     """Start Zen on profile `name` with remote debugging.
 
     If the profile is already open without it, Zen is quit and reopened when
@@ -137,7 +146,7 @@ def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None 
     if port_open(port):
         return False
     path = resolve(name)
-    ensure_prefs(path, [SAFE_PREF])  # before Zen reads user.js, or remote debugging weakens the profile
+    ensure_prefs(path, [SAFE_PREF, *(prefs or [])])  # before Zen reads user.js, or remote debugging weakens it
     if pid := holder(path):
         question = (
             f"Zen is open on profile \u201c{name}\u201d without remote debugging, so Claude can't use it. "
@@ -145,8 +154,9 @@ def launch(name: str, port: int, confirm_relaunch: Callable[[str], bool] | None 
         )
         if not (confirm_relaunch and confirm_relaunch(question)):
             raise ZenError(
-                f"Zen profile '{name}' is open without remote debugging. Quit it (Cmd+Q) and retry, "
-                "or run `zenpilot launch` to reopen it."
+                f"Zen profile '{name}' is open without remote debugging, probably because Zen was restarted "
+                "outside zenpilot (after an update, or from the Dock), and the user didn't agree to reopen it. "
+                "Ask them to quit Zen (Cmd+Q) and retry, or to run `zenpilot launch`."
             )
         quit_zen(pid, path)
     if not ZEN_APP.exists():

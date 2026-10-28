@@ -1,7 +1,9 @@
 """End to end against a live Zen: MCP stdio client -> zenpilot -> BiDi -> fixture page.
 
-Needs Zen running on the port from zen_port() (`zenpilot launch`); skipped otherwise.
-Uses its own temp config, so your allowlist and audit log are untouched.
+Needs Zen running with --remote-debugging-port 9222 (`zenpilot launch`); skipped otherwise.
+ZENPILOT_TEST_PORT picks another port, e.g. a second Zen on a test profile:
+`open -na /Applications/Zen.app --args -P zenpilot --remote-debugging-port 9333`.
+Uses its own temp config and state, so your allowlist, audit log and tab ids are untouched.
 """
 
 import asyncio
@@ -9,6 +11,7 @@ import base64
 import functools
 import http.server
 import json
+import os
 import re
 import shutil
 import socket
@@ -22,6 +25,7 @@ from zen_port import zen_port
 
 ROOT = Path(__file__).parent.parent
 FIXTURE = ROOT / "tests" / "fixture"
+PORT = int(os.environ.get("ZENPILOT_TEST_PORT", "9222"))
 
 
 PORT = zen_port()
@@ -55,10 +59,11 @@ def site():
 def config(tmp_path):
     path = tmp_path / "config.toml"
 
-    def write(allowlist=("localhost",), read_only=False):
+    def write(allowlist=("localhost",), read_only=False, upload_dirs=()):
         path.write_text(
             f"allowlist = {json.dumps(list(allowlist))}\n"
             f"read_only = {'true' if read_only else 'false'}\n"
+            f"upload_dirs = {json.dumps([str(d) for d in upload_dirs])}\n"
             f"port = {PORT}\n"
             "prompts = false\n"
             f'audit_log = "{tmp_path / "audit.jsonl"}"\n'
@@ -68,6 +73,7 @@ def config(tmp_path):
     write()
     write.path = path
     write.audit = tmp_path / "audit.jsonl"
+    write.state = tmp_path / "state"
     return write
 
 
@@ -95,7 +101,8 @@ class Session:
 @asynccontextmanager
 async def zenpilot(config):
     exe = shutil.which("zenpilot", path=str(ROOT / ".venv" / "bin")) or "zenpilot"
-    params = StdioServerParameters(command=exe, env={"ZENPILOT_CONFIG": str(config.path)})
+    env = {"ZENPILOT_CONFIG": str(config.path), "ZENPILOT_STATE": str(config.state)}
+    params = StdioServerParameters(command=exe, env=env)
     async with Client(params) as client:
         yield Session(client)
 
@@ -149,6 +156,7 @@ async def test_read_page_outline(site, config):
         # Prompt injection text stays inside the untrusted fence.
         fence = page[page.index("<untrusted_web_content") : page.index("</untrusted_web_content>")]
         assert "Ignore previous instructions" in fence
+        assert "Fixture footer" in page and "option" not in page  # closed dropdowns list no options
         for role, name in [
             ("link", "Second page"),
             ("textbox", "Name"),
@@ -236,7 +244,11 @@ async def test_stale_and_unknown_refs(site, config):
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
         page = await s.ok("read_page")
         await s.ok("click", ref=ref(page, "button", "Rerender"))
-        stale = await s.err("click", ref=ref(page, "button", "Sign up"))
+        # The only "Sign up" button is found again; one of two "Same" buttons can't be told apart.
+        sign_up = ref(page, "button", "Sign up")
+        assert f'{sign_up} was found again as button "Sign up"' in await s.ok("click", ref=sign_up)
+        assert "submit:" in await page_log(s)
+        stale = await s.err("click", ref=ref(page, "button", "Same"))
         assert "stale" in stale and "read_page" in stale
         assert "Unknown ref" in await s.err("click", ref="r999999")
         fresh = await s.ok("read_page")
@@ -310,3 +322,90 @@ async def test_idle_release_lets_another_client_in(monkeypatch):
     finally:
         await first.close()
         await second.close()
+
+
+async def test_combobox_options_and_select(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        page = await s.ok("read_page")
+        country = ref(page, "combobox", "Country")
+        assert 'select "Details" value="" disabled' in page
+        await s.ok("click", ref=country)
+        page = await s.ok("read_page")
+        # The popup sits at the end of <body>, but is listed under its combobox, and cut short.
+        lines = page.splitlines()
+        at = next(i for i, line in enumerate(lines) if 'combobox "Country" expanded' in line)
+        assert re.search(r'^\s+r\d+ option "Albania"$', lines[at + 1]), lines[at : at + 2]
+        assert page.count(" option ") == 12 and "menuitem" not in page
+        assert "[28 more options; select picks one by name]" in page
+        assert page.index('option "Albania"') < page.index("Fixture footer")
+
+        ambiguous = await s.err("select", ref=ref(page, "combobox", "Country"), option="United")
+        assert "'United Kingdom', 'United States'" in ambiguous
+        assert "No option matching 'Atlantis'" in await s.err(
+            "select", ref=ref(page, "combobox", "Country"), option="Atlantis"
+        )
+        result = await s.ok("select", ref=ref(page, "combobox", "Country"), option="switzerland")
+        assert "Selected 'Switzerland'" in result
+        await s.ok("select", ref=ref(page, "select", "Color"), option="Green")
+        log = await page_log(s)
+        assert "country:Switzerland:true" in log and "select:green" in log
+        page = await s.ok("read_page")
+        assert 'combobox "Country" value="Switzerland" collapsed' in page
+        assert 'select "Details" value=""' in page and 'select "Details" value="" disabled' not in page
+        await s.ok("select", ref=ref(page, "select", "Details"), option="Job Posting: Other")
+        assert "details:Job Posting: Other" in await page_log(s)
+
+
+async def test_type_into_a_combobox_points_to_select(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        page = await s.ok("read_page")
+        result = await s.ok("type", ref=ref(page, "combobox", "Country"), text="Swi")
+        assert "use select to pick an option" in result
+        assert "country:" not in await page_log(s)  # typing alone didn't commit, as on SAP
+
+
+async def test_upload(site, config, tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "cv.pdf").write_bytes(b"%PDF-1.4 cv")
+    (docs / "letter.pdf").write_bytes(b"%PDF-1.4 letter")
+    (tmp_path / "secret.txt").write_text("no")
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        page = await s.ok("read_page")
+        cv = ref(page, "file", "CV")
+        assert "Uploads are off" in await s.err("upload", ref=cv, paths=[str(docs / "cv.pdf")])
+        config(upload_dirs=[docs])
+        assert "isn't in a folder" in await s.err("upload", ref=cv, paths=[str(tmp_path / "secret.txt")])
+        result = await s.ok("upload", ref=cv, paths=[str(docs / "cv.pdf"), str(docs / "letter.pdf")])
+        assert result == f"Attached cv.pdf, letter.pdf to {cv}."
+        assert "files:cv.pdf,letter.pdf" in await page_log(s)
+        assert "isn't a file input" in await s.err(
+            "upload", ref=ref(page, "button", "Check trust"), paths=[str(docs / "cv.pdf")]
+        )
+
+    uploads = [json.loads(line) for line in config.audit.read_text().splitlines() if '"upload"' in line]
+    assert [u["ok"] for u in uploads] == [False, False, True, False]
+    assert uploads[2]["params"]["paths"] == [str(docs / "cv.pdf"), str(docs / "letter.pdf")]
+    assert uploads[2]["params"]["element"] == 'file "CV"'
+
+
+async def test_tab_ids_and_refs_survive_a_reconnect(site):
+    from zenpilot.browser import Browser
+
+    b = Browser()
+    try:
+        async with b.session(PORT):
+            tab_id = await b.new_tab()
+            tab = await b.tab(tab_id)
+            await b.navigate(tab, f"{site}/index.html")
+            page = await b.read_page(tab, lambda url: None)
+        await b.close()  # what the idle release does
+        async with b.session(PORT):
+            tab = await b.tab(tab_id)  # same id, though Zen renamed the tab
+            trust = ref(page, "button", "Check trust")
+            await b.ref_url(trust)
+            assert f'{trust} was found again as button "Check trust"' in await b.click(trust)
+            assert "click:true" in (await b.get_text(tab, 5000))[1]
+            await b.close_tab(tab)
+    finally:
+        await b.close()

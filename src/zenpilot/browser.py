@@ -2,17 +2,19 @@
 
 import asyncio
 import base64
-import json
-import logging
-from collections.abc import Callable
+import time
+from collections import Counter
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from importlib.resources import files
+from urllib.parse import urlsplit
 
 import websockets
 
 from .bidi import BiDi, BiDiError
-from .devtools import Devtools
-from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, render, unwrap
+from .safety import load_state, save_state, untrusted
+from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, mark_unique, render, unwrap
 
 # BiDi errors that mean "this node or frame no longer exists".
 STALE_ERRORS = {"no such node", "no such element", "stale element reference", "detached shadow root", "no such frame"}
@@ -20,30 +22,69 @@ ENTER, BACKSPACE, SHIFT = "\ue007", "\ue003", "\ue008"  # WebDriver key codes
 # Shift+Enter makes a line break in chat composers too, where plain Enter would send.
 SPECIAL_KEYS = {"\n": (SHIFT, ENTER), "\t": "\ue004"}
 # Firefox allows one BiDi session. Releasing it when idle lets Claude Desktop and
-# several Claude Code sessions take turns; refs and tab ids expire with it.
+# several Claude Code sessions take turns. Zen renames every tab and node in a new
+# session, so tabs get their old ids back by URL, and refs are found again by role and name.
 IDLE_RELEASE_SECONDS = 120
+WAITING_SECONDS = 8  # with no tool call for this long, the badge says Claude may be waiting for the user
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
-# Console and network events buffered by Devtools, mapped to the Devtools handler for each.
-DEVTOOLS_EVENTS = {
-    "log.entryAdded": "on_log",
-    "network.beforeRequestSent": "on_before_request",
-    "network.responseStarted": "on_response_started",
-    "network.responseCompleted": "on_response_completed",
-    "network.fetchError": "on_fetch_error",
-}
-BODY_MAX_BYTES = 2_000_000  # response bodies above this are not kept by Zen
-# A click that opens a JavaScript dialog blocks Zen's input reply; give up on it sooner than the default.
-CLICK_TIMEOUT = 5
-SCROLL_ROUNDS = 8  # wheel actions a scroll may take to reach its target
-# Action overlay (config show_actions): drawn before click, type and hover. Cosmetic, so short and best effort.
-OVERLAY_JS = (files("zenpilot") / "overlay.js").read_text()
-OVERLAY_TIMEOUT = 2
-SHOW_PAUSE = 0.25  # seconds the page gets to show the cursor before the action
-DIALOG_HINT = "Action sent; page may be showing a dialog — use handle_dialog"
-log = logging.getLogger(__name__)
+MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 
-# Center and size of an element in viewport pixels: [x, y, width, height].
-RECT_JS = "(el) => { const r = el.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }"
+# The badge (zenpilot's logo and name, so it isn't taken for Claude's own browser extension,
+# and a Stop button) and a glow around the page in the logo's orange.
+# It runs in a sandbox, so the page's scripts can't reach it or fake its button, and sits in
+# a closed shadow root outside <body>, so read_page and get_text don't see it.
+# The host gets the top z-index itself: as a fixed element it's a stacking context, so the
+# z-indexes inside only order its own children, and a page's sticky header would cover the glow.
+# state: "on", "waiting" (no tool call for a while), "stopped", "hidden" (for screenshots) or "off".
+BADGE_JS = """(state, send, action) => {
+  let b = globalThis.zenpilotBadge;
+  if (state === "off") { b?.host.remove(); globalThis.zenpilotBadge = null; return; }
+  if (!b) {
+    const host = document.createElement("zenpilot-badge");
+    const root = host.attachShadow({mode: "closed"});
+    root.innerHTML = `<style>
+      :host { all: initial !important; display: block !important; position: fixed !important;
+        z-index: 2147483647 !important; width: 0; height: 0; }
+      :host([hidden]) { display: none !important; }
+      .edge { position: fixed; inset: 0; pointer-events: none; z-index: 2147483646;
+        box-shadow: inset 0 0 4px 1px rgba(232, 96, 60, .9), inset 0 0 16px 3px rgba(232, 96, 60, .5),
+          inset 0 0 44px 8px rgba(232, 96, 60, .22);
+        animation: breathe 3s ease-in-out infinite; }
+      .pill { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; display: flex;
+        align-items: center; gap: 8px; padding: 5px 5px 5px 11px; border-radius: 999px;
+        background: rgba(30, 30, 32, .94); color: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+        font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+      svg { width: 16px; height: 16px; flex: none; margin-left: -3px; }
+      b { font-weight: 700; }
+      .text { opacity: .8; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .text:empty { display: none; }
+      .stopped { padding-right: 12px; }
+      .stopped svg { filter: grayscale(1); opacity: .7; }
+      .stopped ~ .edge, .stopped button { display: none; }
+      .waiting ~ .edge { animation: none; opacity: .45; }
+      button { all: unset; cursor: pointer; padding: 4px 10px; border-radius: 999px;
+        background: rgba(255, 255, 255, .14); font-weight: 600; }
+      button:hover { background: rgba(255, 255, 255, .24); }
+      button:focus-visible { outline: 2px solid #e8603c; }
+      @keyframes breathe { 50% { opacity: .8; } }
+      @media (prefers-reduced-motion: reduce) { .edge { animation: none; } }
+    </style><div class="pill" role="status">LOGO<b>zenpilot</b><span class="text" aria-live="polite"></span>
+      <button type="button">Stop</button></div><div class="edge"></div>`;
+    b = globalThis.zenpilotBadge = {host, pill: root.querySelector(".pill"), text: root.querySelector(".text")};
+    root.querySelector("button").addEventListener("click", (e) => {
+      if (e.isTrusted) b.send("stop");
+    });
+  }
+  b.send = send;
+  if (!b.host.isConnected) document.documentElement.append(b.host);
+  b.host.hidden = state === "hidden";
+  if (state === "hidden") return;
+  b.pill.classList.toggle("stopped", state === "stopped");
+  b.pill.classList.toggle("waiting", state === "waiting");
+  if (state === "stopped") b.text.textContent = "Stopped";
+  else if (state === "waiting") b.text.textContent = "Claude may be waiting for you";
+  else if (action != null) b.text.textContent = action;
+}""".replace("LOGO", (files("zenpilot") / "logo.svg").read_text().strip())
 
 # Scrolls the element into view and reports anything covering its center.
 PREPARE_JS = """(el) => {
@@ -99,7 +140,62 @@ GET_TEXT_JS = """(max) => {
   return [document.title, text.length, text.slice(0, max)];
 }"""
 
-IS_FILE_INPUT_JS = "(el) => el.isConnected && el.tagName === 'INPUT' && el.type === 'file'"
+# The option to pick in a <select>, an ARIA combobox's popup or a listbox: an exact match,
+# else the only one starting with, else containing, the wanted text.
+FIND_OPTION_JS = """(el, want) => {
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const label = (o) => norm(o.getAttribute("aria-label") || o.label || o.innerText || o.textContent);
+  let opts;
+  if (el.tagName === "SELECT") opts = [...el.options];
+  else {
+    const ids = [el, ...el.querySelectorAll("[role=combobox]")].flatMap((e) =>
+      `${e.getAttribute("aria-controls") || ""} ${e.getAttribute("aria-owns") || ""}`.split(/\\s+/));
+    const lists = [el, ...ids.filter(Boolean).map((id) => el.getRootNode().getElementById?.(id))].filter(Boolean);
+    const shown = (o) => o.checkVisibility({ checkVisibilityCSS: true }) && o.getBoundingClientRect().height > 0;
+    opts = lists.flatMap((l) => [...l.querySelectorAll("[role=option]")]).filter(shown);
+    // A popup without aria-controls: the options on screen now are the open one's.
+    if (!opts.length) opts = [...document.querySelectorAll("[role=option]")].filter(shown);
+  }
+  const w = norm(want).toLowerCase();
+  const matches = [(l) => l === w, (l) => l.startsWith(w), (l) => l.includes(w)]
+    .map((f) => opts.filter((o) => f(label(o).toLowerCase())))
+    .find((m) => m.length);
+  const names = (matches || opts).slice(0, 15).map(label);
+  const status = !matches ? "none" : matches.length === 1 || label(matches[0]).toLowerCase() === w ? "ok" : "ambiguous";
+  return [status, status === "ok" ? matches[0] : null, names, opts.length];
+}"""
+
+PICK_NATIVE_JS = """(el, opt) => {
+  if (el.disabled) return false;
+  el.focus();
+  opt.selected = true;
+  el.dispatchEvent(new Event("input", {bubbles: true}));
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+  return true;
+}"""
+
+# What a select, combobox or listbox shows as chosen, and whether its list is still open.
+CHOSEN_JS = """(el) => {
+  if (el.tagName === "SELECT") return [el.selectedOptions[0]?.text.trim() || "", false];
+  const box = el.matches("input, textarea") ? el : el.querySelector("input, textarea");
+  const chosen = box ? box.value
+    : el.getAttribute("role") === "listbox" ? el.querySelector("[aria-selected=true]")?.innerText : el.innerText;
+  const open = [el, box].some((e) => e?.getAttribute("aria-expanded") === "true");
+  return [(chosen || "").replace(/\\s+/g, " ").trim(), open];
+}"""
+
+# The file input a ref stands for: itself, one inside it, or its label's.
+FILE_INPUT_JS = """(el) => {
+  if (!el.isConnected) return ["stale"];
+  const f = el.matches("input[type=file]") ? el
+    : el.querySelector("input[type=file]") || el.control || el.closest("label")?.control;
+  if (!f || f.type !== "file") return ["none"];
+  return [f.disabled ? "disabled" : "ok", f, f.multiple];
+}"""
+
+FILE_NAMES_JS = "(f) => [...f.files].map((x) => x.name)"
+
+RECT_JS = "(el) => JSON.stringify(el.getBoundingClientRect())"
 
 TAB_STATE_JS = "() => [document.title, document.visibilityState, document.hasFocus()]"
 
@@ -263,6 +359,20 @@ class BrowserTimeout(BrowserError):
     pass
 
 
+class StaleRef(BrowserError):
+    """The ref's element is gone or hidden; it may be found again by role and name."""
+
+
+class FilesRefused(BrowserError):
+    """Zen can't create File objects for input.setFiles (zen.UPLOAD_PREF is off)."""
+
+
+NO_WINDOW = (
+    "Zen is running but has no open window, so there's no tab to use or open. Ask the user to open "
+    "a Zen window (click Zen in the Dock), then retry."
+)
+
+
 def _arg(v) -> dict:
     if isinstance(v, dict):
         if "sharedId" in v:  # already a remote reference
@@ -279,7 +389,11 @@ def _arg(v) -> dict:
 
 
 def _stale(key: str) -> BrowserError:
-    return BrowserError(f"Ref {key} is stale: the page changed since read_page. Call read_page again for fresh refs.")
+    return StaleRef(f"Ref {key} is stale: the page changed since read_page. Call read_page again for fresh refs.")
+
+
+def _site(url: str) -> str:
+    return urlsplit(url).hostname or ""
 
 
 class Browser:
@@ -290,20 +404,23 @@ class Browser:
         self.devtools = Devtools()
         self.devtools_error: str | None = None  # why console/network capture is off, if it is
         self._lock = asyncio.Lock()
-        self._next_tab = 1  # never reset, so old tab ids can't alias new tabs
+        self._next_tab = 1  # never reset (and shared through the state file), so old tab ids can't alias new tabs
         self._tab_ids: dict[str, str] = {}  # context -> "t1"
         self._contexts: dict[str, str] = {}  # "t1" -> context
-        self._last_used: str | None = None  # context zenpilot last opened, switched to or navigated
-        self._prompts: dict[str, tuple[str, str]] = {}  # context -> (type, message) of an open dialog
+        self._orphans: list[list[str]] = []  # [tab id, url] from the last session, matched on the next getTree
+        self._state = ""  # state file with the tab ids, per port
+        self._saved: dict = {}  # {"next": 5, "tabs": [[tab id, url], ...]} as last seen
+        self._session = 0
+        self._last_used: str | None = None  # tab zenpilot last opened, switched to or navigated
         self._busy = 0
         self._idle_timer: asyncio.TimerHandle | None = None
+        self._waiting_timer: asyncio.TimerHandle | None = None
         self.refs = Refs()
-        self._routes: dict[str, dict] = {}  # route id -> url, action, reply, and its intercept id on this session
-        self._route_seq = 0
-        self._answers: set[asyncio.Task] = set()
-        # Mirrors config show_actions; server.py sets it before each tool call. Off until then.
-        self.show_actions = False
-        self.zen_version: str | None = None  # browserVersion from the BiDi session, once connected
+        self._outlines: dict[str, list[str]] = {}  # context -> its lines at the latest read, to report changes
+        self._badges: set[str] = set()  # contexts showing the badge
+        self._acted = 0.0  # when the last input action ended
+        self._busy_input = False  # an input action is running
+        self.stopped = False  # the user pressed Stop on the badge
 
     # -- connection -------------------------------------------------------
 
@@ -311,12 +428,7 @@ class Browser:
         async with self._lock:
             if self._bidi and self._bidi.connected:
                 return
-            # Firefox issues new context ids per session, so old ids and refs are void.
-            self._tab_ids.clear()
-            self._contexts.clear()
-            self._last_used = None
-            self._prompts.clear()
-            self.refs.clear()
+            self._new_session(port)
             bidi = BiDi(f"ws://127.0.0.1:{port}/session")
             try:
                 session = await bidi.connect()
@@ -343,48 +455,28 @@ class Browser:
                             "browsingContext.navigationStarted",
                             "browsingContext.load",
                             "browsingContext.contextCreated",
-                            "browsingContext.userPromptOpened",
-                            "browsingContext.userPromptClosed",
+                            "script.message",
                         ]
                     },
                 )
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
-            try:
-                await self._enable_devtools(bidi)
-                bidi.on("network.beforeRequestSent", lambda p, b=bidi: self._answer_route(b, p))
-                for rid, route in list(self._routes.items()):  # intercepts die with the session
-                    try:
-                        route["intercept"] = await self._add_intercept(bidi, route["url"])
-                    except BrowserError as e:
-                        del self._routes[rid]
-                        log.warning("route %s dropped on reconnect: %s", rid, e)
-            except BaseException:
-                await bidi.close()  # don't leave an orphaned session behind
-                raise
-            self.zen_version = ((session or {}).get("capabilities") or {}).get("browserVersion")
+            bidi.on("script.message", self._on_message)
             self._bidi = bidi
 
-    def _on_prompt(self, params: dict) -> None:
-        self._prompts[params["context"]] = (params.get("type", ""), params.get("message", ""))
-
-    def _on_prompt_closed(self, params: dict) -> None:
-        self._prompts.pop(params.get("context"), None)
-
-    async def _enable_devtools(self, bidi: BiDi) -> None:
-        """Buffer console and network events. Best effort: on failure the browser stays usable without them."""
-        self.devtools_error = None
-        for event, handler in DEVTOOLS_EVENTS.items():
-            bidi.on(event, getattr(self.devtools, handler))
-        try:
-            await bidi.send("session.subscribe", {"events": list(DEVTOOLS_EVENTS)})
-            await bidi.send(
-                "network.addDataCollector", {"dataTypes": ["response"], "maxEncodedDataSize": BODY_MAX_BYTES}
-            )
-        except (BiDiError, ConnectionError, TimeoutError) as e:
-            self.devtools_error = str(e) or type(e).__name__
-            log.warning("devtools capture unavailable: %s", self.devtools_error)
+    def _new_session(self, port: int) -> None:
+        """Forget this session's context ids; tabs are matched to their ids on the next getTree."""
+        # Another zenpilot may have used Zen since; its view of the tabs is the latest.
+        self._state = f"tabs-{port}"
+        self._saved = load_state(self._state) or self._saved
+        self._orphans = list(self._saved.get("tabs", []))
+        self._next_tab = max(self._next_tab, self._saved.get("next", 1))
+        self._tab_ids.clear()
+        self._contexts.clear()
+        self._outlines.clear()
+        self._badges.clear()
+        self._session += 1
 
     @property
     def connected(self) -> bool:
@@ -392,13 +484,21 @@ class Browser:
 
     async def close(self) -> None:
         if self._bidi:
+            if self._bidi.connected:
+                for context in list(self._badges):
+                    await self._badge(context, "off")
+                try:
+                    await self.tabs(probe=False)  # save the tabs' latest URLs, to match them by next time
+                except (BrowserError, BiDiError):
+                    pass
             await self._bidi.close()
 
     @asynccontextmanager
     async def session(self, port: int):
         """Hold the BiDi session for one tool call; release it after a quiet period."""
-        if self._idle_timer:
-            self._idle_timer.cancel()
+        for timer in (self._idle_timer, self._waiting_timer):
+            if timer:
+                timer.cancel()
         self._busy += 1
         try:
             await self.connect(port)
@@ -407,6 +507,13 @@ class Browser:
             self._busy -= 1
             loop = asyncio.get_running_loop()
             self._idle_timer = loop.call_later(IDLE_RELEASE_SECONDS, lambda: loop.create_task(self._release_if_idle()))
+            self._waiting_timer = loop.call_later(WAITING_SECONDS, lambda: loop.create_task(self._show_waiting()))
+
+    async def _show_waiting(self) -> None:
+        """Between calls, Claude may be asking the user something in its own app; say so on the badge."""
+        if self._busy == 0 and not self.stopped and self.connected:
+            for context in list(self._badges):
+                await self._badge(context, "waiting")
 
     async def _release_if_idle(self) -> None:
         async with self._lock:
@@ -441,19 +548,69 @@ class Browser:
             raise BrowserError(f"Script error in page: {r['exceptionDetails'].get('text', '')}")
         return unwrap(r["result"])
 
+    # -- badge --------------------------------------------------------------
+
+    async def _badge(self, context: str, state: str, action: str | None = None) -> None:
+        """Show, change or remove the badge. It's only a sign for the user, so failures are ignored."""
+        try:
+            await self.call(
+                "script.callFunction",
+                {
+                    "functionDeclaration": BADGE_JS,
+                    "target": {"context": context, "sandbox": "zenpilot"},
+                    "arguments": [_arg(state), {"type": "channel", "value": {"channel": "zenpilot"}}, _arg(action)],
+                    "awaitPromise": False,
+                    "resultOwnership": "none",
+                },
+                timeout=3,
+            )
+        except (BrowserError, BiDiError):
+            pass
+        if state == "off":
+            self._badges.discard(context)
+        else:
+            self._badges.add(context)
+
+    async def mark(self, context: str, action: str | None = None) -> None:
+        """Show the badge on a tab zenpilot uses, saying what it's doing (None keeps the last words)."""
+        await self._badge(context, "stopped" if self.stopped else "on", action)
+
+    def _on_message(self, params: dict) -> None:
+        if params.get("channel") != "zenpilot" or unwrap(params["data"]) != "stop":
+            return
+        # zenpilot's own click can land on the badge when it covers the target; that's not the user.
+        if self._busy_input or time.monotonic() - self._acted < 1:
+            return
+        self.stopped = True
+        for context in list(self._badges):
+            asyncio.get_running_loop().create_task(self._badge(context, "stopped"))
+
     # -- tabs ---------------------------------------------------------------
 
-    def _tab_id(self, context: str) -> str:
+    def _tab_id(self, context: str, tab: str | None = None) -> str:
         if context not in self._tab_ids:
-            tab = f"t{self._next_tab}"
-            self._next_tab += 1
+            if tab is None:
+                tab = f"t{self._next_tab}"
+                self._next_tab += 1
             self._tab_ids[context] = tab
             self._contexts[tab] = context
         return self._tab_ids[context]
 
+    def _adopt(self, contexts: list[dict]) -> None:
+        """Give tabs from before a reconnect their old ids: same URL first, then same site, in tab order."""
+        orphans, self._orphans = self._orphans, []
+        for same in (lambda a, b: a == b, lambda a, b: _site(a) != "" and _site(a) == _site(b)):
+            for c in contexts:
+                match = c["context"] not in self._tab_ids and next((o for o in orphans if same(o[1], c["url"])), None)
+                if match:
+                    orphans.remove(match)
+                    self._tab_id(c["context"], match[0])
+
     async def tabs(self, probe: bool = True) -> list[dict]:
         """Top-level tabs. With probe, also fetch titles and work out the active tab."""
         contexts = (await self.call("browsingContext.getTree", {"maxDepth": 0}))["contexts"]
+        if self._orphans:
+            self._adopt(contexts)
         tabs = [
             {
                 "id": self._tab_id(c["context"]),
@@ -469,6 +626,13 @@ class Browser:
         for ctx in [c for c in self._tab_ids if c not in live]:
             self.refs.drop_tab(self._tab_ids[ctx])
             del self._contexts[self._tab_ids.pop(ctx)]
+        state = {"next": self._next_tab, "tabs": [[t["id"], t["url"]] for t in tabs]}
+        if state != self._saved:
+            self._saved = state
+            try:
+                save_state(self._state, state)
+            except OSError:
+                pass  # ids still survive reconnects, just not restarts
         if not probe or not tabs:
             return tabs
 
@@ -488,7 +652,7 @@ class Browser:
             _, visibility, focus = state
             visible = visibility == "visible"
             in_focused_window = visible and t["window"] == focused_window
-            return 4 * focus + 2 * visible + in_focused_window + 2.5 * (t["context"] == self._last_used)
+            return 4 * focus + 2 * visible + in_focused_window + 2.5 * (t["id"] == self._last_used)
 
         for t, state in zip(tabs, states, strict=True):
             t["title"] = state[0] or ""
@@ -499,14 +663,11 @@ class Browser:
         tabs = await self.tabs(probe=tab_id is None)
         if tab_id is None:
             if not tabs:
-                raise BrowserError("Zen has no open tabs. Use new_tab.")
+                raise BrowserError(NO_WINDOW)
             return next(t for t in tabs if t["active"])
         tab = next((t for t in tabs if t["id"] == tab_id.strip().lower()), None)
         if tab is None:
-            raise BrowserError(
-                f"Unknown tab id '{tab_id}'. Tab ids change when a tab closes or zenpilot reconnects "
-                "after being idle. Call list_tabs for current ids."
-            )
+            raise BrowserError(f"Unknown tab id '{tab_id}': that tab was closed. Call list_tabs for current ids.")
         return tab
 
     async def url_of(self, context: str) -> str:
@@ -515,12 +676,18 @@ class Browser:
     async def new_tab(self) -> str:
         # A foreground create waits for the tab to become visible, which never happens
         # while Zen's window is covered. Create in the background, then activate.
-        context = (await self.call("browsingContext.create", {"type": "tab", "background": True}))["context"]
-        await self.activate({"context": context})
-        return self._tab_id(context)
+        try:
+            context = (await self.call("browsingContext.create", {"type": "tab", "background": True}))["context"]
+        except BiDiError as e:
+            if "getTabBrowser" in e.message:  # Firefox's remote agent fails like this with no browser window
+                raise BrowserError(NO_WINDOW) from None
+            raise
+        tab = self._tab_id(context)
+        await self.activate({"id": tab, "context": context})
+        return tab
 
     async def activate(self, tab: dict) -> None:
-        self._last_used = tab["context"]
+        self._last_used = tab["id"]
         try:
             # Selects the tab at once, but the reply waits on window focus and
             # visibility changes that a covered window never delivers.
@@ -535,7 +702,7 @@ class Browser:
     async def navigate(self, tab: dict, url: str) -> tuple[str, bool]:
         """Navigate and wait for load. Returns (final url, still_loading)."""
         self.refs.drop_tab(tab["id"])
-        self._last_used = tab["context"]
+        self._last_used = tab["id"]
         try:
             await self.call("browsingContext.navigate", {"context": tab["context"], "url": url, "wait": "complete"})
             loading = False
@@ -547,6 +714,12 @@ class Browser:
 
     # -- page content -----------------------------------------------------
 
+    async def _walk(self, context: str) -> tuple[list[tuple[Item, dict | None]], bool]:
+        """One frame's outline: (item, child frame or None) pairs, and whether it was cut short."""
+        out, truncated = await self.run(context, WALKER_JS, MAX_ITEMS, timeout=20)
+        items = [(Item(d, line, context, node and node["sharedId"], key), frame) for d, line, node, frame, key in out]
+        return items, truncated
+
     async def read_page(self, tab: dict, frame_allowed: Callable[[str], str | None]) -> str:
         """Outline of the page; frame_allowed(url) returns a reason string to skip a frame."""
         self.refs.drop_tab(tab["id"])
@@ -555,10 +728,11 @@ class Browser:
 
         async def collect(context: str, base: int):
             nonlocal truncated
-            out, trunc = await self.run(context, WALKER_JS, MAX_ITEMS, timeout=20)
+            out, trunc = await self._walk(context)
+            self._outlines[context] = [item.line for item, _ in out]
             truncated |= trunc
-            for depth, line, node, frame in out:
-                item = Item(base + depth, line, context, node and node["sharedId"])
+            for item, frame in out:
+                item.depth += base
                 items.append(item)
                 if not frame:
                     continue
@@ -567,7 +741,7 @@ class Browser:
                     if reason := frame_allowed(url):
                         item.line += f" [skipped: {reason}]"
                     else:
-                        await collect(frame["context"], base + depth + 1)
+                        await collect(frame["context"], item.depth + 1)
                 except (BrowserError, BiDiError):
                     item.line += " [not readable]"
 
@@ -580,7 +754,9 @@ class Browser:
             items.clear()
             truncated = False
             await collect(tab["context"], 0)
-        return render(items, self.refs, tab["id"], truncated)
+        mark_unique(items, tab["context"])
+        url = await self.url_of(tab["context"])  # where the refs were read, to find them again there only
+        return render(items, self.refs, tab["id"], truncated, url, self._session)
 
     async def get_text(self, tab: dict, max_chars: int) -> tuple[str, str]:
         title, length, text = await self.run(tab["context"], GET_TEXT_JS, max_chars)
@@ -588,11 +764,18 @@ class Browser:
             text += f"\n[truncated: showing {max_chars} of {length} characters]"
         return title, text or "[no text]"
 
-    async def screenshot(self, tab: dict, full_page: bool = False) -> bytes:
-        params = {"context": tab["context"], "format": {"type": "image/jpeg", "quality": 0.8}}
-        if full_page:  # "document" captures the whole page, not just the viewport
-            params["origin"] = "document"
-        r = await self.call("browsingContext.captureScreenshot", params)
+    async def screenshot(self, tab: dict) -> bytes:
+        await self._badge(tab["context"], "hidden")
+        try:
+            r = await self.call(
+                "browsingContext.captureScreenshot",
+                {
+                    "context": tab["context"],
+                    "format": {"type": "image/jpeg", "quality": 0.8},
+                },
+            )
+        finally:
+            await self.mark(tab["context"])
         return base64.b64decode(r["data"])
 
     async def response_body(self, request_id: str) -> tuple[str, bool]:
@@ -611,15 +794,53 @@ class Browser:
             )
         return ref
 
+    def ref_key(self, key: str) -> str | None:
+        """The ref's role and name, for the audit log."""
+        ref = self.refs.get(key)
+        return ref.key if ref else None
+
     def top_context(self, ref: Ref) -> str:
         return self._contexts.get(ref.tab, ref.context)
 
     async def ref_url(self, key: str) -> str:
         """URL of the tab a ref belongs to."""
+        ref = self.ref(key)
+        if ref.tab not in self._contexts:
+            await self.tabs(probe=False)  # first call after a reconnect: match tabs to their ids
         try:
-            return await self.url_of(self.top_context(self.ref(key)))
-        except BiDiError:
+            return await self.url_of(self._contexts[ref.tab])
+        except (KeyError, BiDiError):
             raise BrowserError(f"The tab ref {key} belonged to is gone. Call list_tabs, then read_page.") from None
+
+    async def _found_again(self, key: str, ref: Ref) -> Ref | None:
+        """Find a ref's element again by its role and name, if it's the only one on the same page."""
+        if ref.tab not in self._contexts:
+            await self.tabs(probe=False)
+        context = self._contexts.get(ref.tab)
+        if not ref.url or not context or (await self.url_of(context)).split("#")[0] != ref.url.split("#")[0]:
+            return None
+        same = [it for it, _ in (await self._walk(context))[0] if it.key == ref.key]
+        if len(same) != 1:
+            return None
+        ref = replace(ref, context=context, shared_id=same[0].shared_id, session=self._session)
+        self.refs.replace(key, ref)
+        return ref
+
+    async def _target[T](self, key: str, check: Callable[[str, Ref], Awaitable[T]]) -> tuple[Ref, T, str]:
+        """The ref's element, found again by role and name if needed. Returns (ref, check's result, note)."""
+        ref = self.ref(key)
+        if ref.session == self._session:
+            try:
+                return ref, await check(key, ref), ""
+            except StaleRef:
+                if not (ref := await self._found_again(key, ref)):
+                    raise
+        elif not (ref := await self._found_again(key, ref)):
+            raise BrowserError(
+                f"Ref {key} is from before zenpilot reconnected to Zen and can't be found again "
+                "by role and name. Call read_page again."
+            )
+        return ref, await check(key, ref), f" ({key} was found again as {ref.key})"
 
     async def _prepare(self, key: str, ref: Ref) -> tuple[str, str, str]:
         """Scroll the node into view. Returns (tagName, input type or "", covering element or "")."""
@@ -632,11 +853,15 @@ class Browser:
         if status == "stale":
             raise _stale(key)
         if status == "hidden":
-            raise BrowserError(f"Ref {key} is no longer visible. Call read_page again.")
+            raise StaleRef(f"Ref {key} is no longer visible. Call read_page again.")
         return tag, kind, cover
 
-    async def _actions(self, ref: Ref, actions: list[dict], timeout: float = 30) -> None:
-        await self.call("input.performActions", {"context": ref.context, "actions": actions}, timeout)
+    async def _actions(self, ref: Ref, actions: list[dict]) -> None:
+        self._busy_input = True
+        try:
+            await self.call("input.performActions", {"context": ref.context, "actions": actions})
+        finally:
+            self._busy_input, self._acted = False, time.monotonic()
 
     async def _click(self, ref: Ref, timeout: float = 30) -> None:
         origin = {"type": "element", "element": {"sharedId": ref.shared_id}}
@@ -908,36 +1133,63 @@ class Browser:
             for fut in (started, loaded, created):
                 fut.cancel()
 
+    async def _changes(self, ref: Ref) -> str:
+        """What changed in the ref's frame since it was last read, with refs for new controls."""
+        old = self._outlines.get(ref.context)
+        if old is None:
+            return ""
+        try:
+            items = [item for item, _ in (await self._walk(ref.context))[0]]
+            url = await self.url_of(ref.context)
+        except (BrowserError, BiDiError):
+            return ""
+        self._outlines[ref.context] = [it.line for it in items]
+        mark_unique(items, self.top_context(ref))
+        left, now = Counter(old), Counter(it.line for it in items)
+        added = []
+        for it in items:
+            if left[it.line]:
+                left[it.line] -= 1
+            else:
+                added.append(it)
+        removed = []
+        for line in old:
+            if now[line]:
+                now[line] -= 1
+            else:
+                removed.append(line)
+        if not added and not removed:
+            return "\nThe page outline didn't change (yet)."
+        lines = []
+        for it in added[:MAX_ADDED]:
+            if it.shared_id:
+                new = Ref(ref.tab, it.context, it.shared_id, it.key or "", url if it.unique else "", self._session)
+                lines.append(f"+ {self.refs.add(new)} {it.line}")
+            else:
+                lines.append(f"+ {it.line}")
+        lines += [f"- {line}" for line in removed[:MAX_REMOVED]]
+        if more := max(0, len(added) - MAX_ADDED) + max(0, len(removed) - MAX_REMOVED):
+            lines.append(f"[{more} more changes; read_page shows the whole page]")
+        return "\nPage changes:\n" + untrusted("\n".join(lines), url)
+
     async def click(self, key: str) -> str:
-        ref = self.ref(key)
-        _, _, cover = await self._prepare(key, ref)
-        await self._show(ref, "click", "click")
-        result = f"Clicked {key}."
+        ref, (_, _, cover), note = await self._target(key, self._prepare)
+        result = f"Clicked {key}{note}."
         if cover:
             result += f" Note: its center was covered by <{cover}>, which received the click."
-        try:
-            nav = await self._settle(ref, lambda: self._click(ref, CLICK_TIMEOUT))
-        except BrowserTimeout:
-            # Zen doesn't answer input while a dialog is open; the click itself went through.
-            hint = DIALOG_HINT
-            if note := self.dialog_note(self.top_context(ref)):
-                hint = f"{note}. {hint}"
-            return hint
-        if nav:
-            result += f" {nav}."
-        return result
+        if nav := await self._settle(ref, lambda: self._click(ref)):
+            return result + f" {nav}."
+        return result + await self._changes(ref)
 
     async def type(self, key: str, text: str, submit: bool) -> str:
-        ref = self.ref(key)
-        tag, kind, _ = await self._prepare(key, ref)
-        await self._show(ref, "type", f"type {len(text)} chars")
+        ref, (tag, kind, _), note = await self._target(key, self._prepare)
         if kind in VALUE_INPUTS:
             value = await self.run(ref.context, SET_VALUE_JS, {"sharedId": ref.shared_id}, text)
             if value is None:
                 raise BrowserError(f"Ref {key} is disabled or read-only.")
             if text and not value:
                 raise BrowserError(f"{text!r} isn't a valid {kind} value. Use the format {VALUE_INPUTS[kind]}.")
-            result = f"Set {key} to {value!r}."
+            result = f"Set {key}{note} to {value!r}."
         else:
             if tag == "SELECT":
                 # Clicking would open the native popup; focus and type to pick an option instead.
@@ -946,12 +1198,107 @@ class Browser:
                 await self._click(ref)
                 await self.run(ref.context, SELECT_CONTENT_JS, {"sharedId": ref.shared_id})
             await self._keys(ref, [SPECIAL_KEYS.get(ch, ch) for ch in text] or [BACKSPACE])
-            result = f"Typed {len(text)} characters into {key}."
+            result = f"Typed {len(text)} characters into {key}{note}."
+            if ref.key.startswith("combobox"):
+                result += " If it offers a list, use select to pick an option; typing alone may not choose it."
         if submit and (nav := await self._settle(ref, lambda: self._keys(ref, [ENTER]))):
-            result += f" Pressed Enter. {nav}."
-        elif submit:
+            return result + f" Pressed Enter. {nav}."
+        if submit:
             result += " Pressed Enter."
-        return result
+        await asyncio.sleep(0.3)  # suggestion lists and validation messages show up as you type
+        return result + await self._changes(ref)
+
+    async def _find_option(self, ref: Ref, option: str, wait: float) -> tuple[str, dict | None, list[str], int]:
+        """Look for the option, for up to wait seconds while the list opens or filters."""
+        for i in range(int(wait / 0.25) + 1):
+            if i:
+                await asyncio.sleep(0.25)
+            found = await self.run(ref.context, FIND_OPTION_JS, {"sharedId": ref.shared_id}, option)
+            if found[0] != "none":
+                break
+        return found
+
+    async def select(self, key: str, option: str) -> str:
+        ref, (tag, _, _), note = await self._target(key, self._prepare)
+        el = {"sharedId": ref.shared_id}
+        found = await self._find_option(ref, option, 0)
+        if tag != "SELECT" and found[0] == "none":
+            await self._click(ref)  # opens it
+            found = await self._find_option(ref, option, 1)
+            if found[0] == "none" and tag in ("INPUT", "TEXTAREA"):
+                await self.run(ref.context, SELECT_CONTENT_JS, el)  # type to filter, as a person would
+                await self._keys(ref, list(option))
+                found = await self._find_option(ref, option, 3)
+        status, opt, names, total = found
+        if status == "none":
+            listed = f" Its options include: {', '.join(map(repr, names))}." if names else " No options showed up."
+            raise BrowserError(f"No option matching {option!r} in {key}.{listed}")
+        if status == "ambiguous":
+            raise BrowserError(f"{option!r} matches several options in {key}: {', '.join(map(repr, names))}. Be exact.")
+        nav = ""
+        if tag == "SELECT":
+            if not await self.run(ref.context, PICK_NATIVE_JS, el, opt):
+                raise BrowserError(f"Ref {key} is disabled.")
+        else:
+            opt_ref = replace(ref, shared_id=opt["sharedId"])
+            await self._wait_still(key, opt_ref)  # a click on a popup that's still animating open can miss
+            nav = await self._settle(ref, lambda: self._click(opt_ref))
+        chosen, open_ = await self._chosen(ref)
+        # Typeahead fills a combobox's text before anything is chosen, so it only counts once the list closes.
+        if not open_ and (names[0].lower() in chosen.lower() or (chosen and chosen.lower() in names[0].lower())):
+            result = f"Selected {names[0]!r} in {key}{note}."
+        else:
+            state = "its list is still open" if open_ else f"it shows {chosen!r}"
+            result = (
+                f"Clicked the option {names[0]!r} in {key}{note}, but {state}, so the choice may not have been "
+                "committed. Check with read_page or screenshot."
+            )
+        return result + (f" {nav}." if nav else await self._changes(ref))
+
+    async def _wait_still(self, key: str, ref: Ref) -> None:
+        """Scroll an option into view once, then wait (up to 2s) until it stops moving."""
+        await self._prepare(key, ref)
+        last = None
+        for _ in range(10):
+            rect = await self.run(ref.context, RECT_JS, {"sharedId": ref.shared_id})
+            if rect == last:
+                return
+            last = rect
+            await asyncio.sleep(0.2)
+
+    async def _chosen(self, ref: Ref) -> tuple[str, bool]:
+        """What the dropdown shows as chosen, once its list closes (waiting up to 2s), and whether it's open."""
+        for _ in range(8):
+            await asyncio.sleep(0.25)
+            chosen, open_ = await self.run(ref.context, CHOSEN_JS, {"sharedId": ref.shared_id})
+            if not open_:
+                break
+        return chosen, open_
+
+    async def _file_input(self, key: str, ref: Ref) -> dict:
+        status, *rest = await self.run(ref.context, FILE_INPUT_JS, {"sharedId": ref.shared_id})
+        if status == "stale":
+            raise _stale(key)
+        if status == "none":
+            raise BrowserError(f"Ref {key} isn't a file input, and has none inside it or in its label.")
+        if status == "disabled":
+            raise BrowserError(f"The file input {key} is disabled.")
+        return {"input": rest[0], "multiple": rest[1]}
+
+    async def upload(self, key: str, files: list[str]) -> str:
+        ref, f, note = await self._target(key, self._file_input)
+        if len(files) > 1 and not f["multiple"]:
+            raise BrowserError(f"The file input {key} takes one file.")
+        try:
+            await self.call("input.setFiles", {"context": ref.context, "element": f["input"], "files": files})
+        except BiDiError as e:
+            if "InvalidStateError" in e.message:
+                raise FilesRefused(e.message) from None
+            raise
+        names = await self.run(ref.context, FILE_NAMES_JS, f["input"])
+        if len(names) != len(files):
+            raise BrowserError(f"Zen didn't take the files: {key} now holds {names or 'none'}.")
+        return f"Attached {', '.join(names)} to {key}{note}."
 
     async def _wheel(self, ctx: str, w: float, h: float, dx: int, dy: int, before: str) -> str:
         """Send one wheel action and wait for the scroll position to settle. Returns the settled state."""

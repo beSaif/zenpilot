@@ -13,7 +13,7 @@
 Let Claude use your [Zen browser](https://zen-browser.app). Works with Claude Desktop and
 Claude Code, kind of like Claude in Chrome but for Zen.
 
-[![zenpilot demo: install, set up, then Claude fills in and submits a form in Zen](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)](https://github.com/beSaif/zenpilot/blob/main/docs/demo.mp4)
+![zenpilot demo: install, set up, then Claude fills in and submits a form in Zen](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)
 
 There's no browser extension. zenpilot opens Zen with its remote control turned on and
 talks to it directly.
@@ -38,6 +38,9 @@ Setup asks which Zen profile to use and which sites Claude may visit. Then it co
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
 Desktop afterwards.
 
+Either way, zenpilot updates itself to the newest release each time Claude starts it. To stay
+on one version with uv, install it pinned: `uv tool install zenpilot==0.5.0`.
+
 ## Use it
 
 Just ask Claude: *"order a large pizza with bacon on httpbin.org/forms/post for Sam, then submit it"*.
@@ -49,23 +52,24 @@ The first time, a few popups may show up. Only you see them, not Claude:
 - **Reopen Zen?** If Zen is already open without remote control, zenpilot offers to restart
   it. Your tabs come back.
 - **Allow this site?** Claude only works on sites you allow. Choose *Don't Allow*, *Allow
-  This Session* or *Always Allow*.
+  for 12 Hours* or *Always Allow*. If you miss it, it asks again next time. After *Don't
+  Allow* it waits 10 minutes before asking again, or run `zenpilot allow <site>`.
 
 Pressing Enter always picks the safe answer.
 
-Claude can open, switch and close tabs, go to a URL, read the page, click, type, scroll and
-take screenshots. It can't touch cookies, passwords or downloads, and it can't run its own
-JavaScript unless you set `allow_scripts = true`.
+While Claude works in a tab, an orange glow goes around the page and a zenpilot badge in the
+bottom-left corner says so. Press **Stop** on it and Claude stops and asks you what to do. If
+it tries again anyway, a popup asks whether to let it continue.
 
-More tools (devtools and claude-in-chrome parity): `read_console_messages`,
-`read_network_requests`, `network_request`, `har_export`, `javascript_tool`, `press_key`,
-`resize_window`, `handle_dialog`, `file_upload`, `find`, `form_input`, `hover`, `wait_for`,
-`network_route`, `network_unroute`, `browser_batch`, `action_history` and `run_report`.
+Claude can open, switch and close tabs, go to a URL, read the page, click, type, pick from
+dropdowns, scroll and take screenshots. It can attach files to upload, but only from folders
+you list in `upload_dirs`. It can't touch cookies, passwords or downloads, and it can't run its
+own JavaScript.
 
 ## When it gets stuck
 
 zenpilot is far from perfect, and every site is different. When Claude can't do something
-(say, upload a file), it notes what it tried. zenpilot also notes tool calls that failed or
+(say, drag and drop), it notes what it tried. zenpilot also notes tool calls that failed or
 took over 5 seconds. If anything went wrong, a notification at the end of the session points
 you to a report in `~/.local/state/zenpilot/reports/`.
 
@@ -85,7 +89,8 @@ and URLs lose their `?query` part. Still, read it before you submit.
   profile, a shady page could try to trick Claude into doing stuff in your accounts, so only
   allow sites you trust.
 - **Read-only mode.** Set `read_only = true` and Claude can look but not click or type.
-- **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`.
+- **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`, with
+  what it clicked. Typed text isn't logged, only its length. `zenpilot log` shows it as a timeline.
 - **Remote control is open while Zen runs this way.** Other apps on your Mac could connect
   to it too, and some sites (banks, Cloudflare checks) may think you're a bot. When you're
   done, quit Zen and open it normally.
@@ -98,10 +103,11 @@ blocker and so on), which would otherwise happen when remote control is on.
 | Command | What it does |
 |---|---|
 | `zenpilot setup` | Set everything up (see above) |
-| `zenpilot allow [site...]` | Allow sites. `--remove` takes them off. No sites lists them. |
+| `zenpilot allow [site...]` | Allow sites. `--remove` takes them off (12-hour ones too). No sites lists them. |
 | `zenpilot launch` | Open Zen with remote control on |
 | `zenpilot doctor` | Check your setup and say how to fix anything that's broken |
 | `zenpilot report` | Show the latest session report. `--issue` files it on GitHub, `--list` lists them all. |
+| `zenpilot log` | Show what Claude did lately. `-n 200` for more, `--errors` for failures only |
 
 ## Settings
 
@@ -116,6 +122,8 @@ prompts = true                           # show the popups above
 port = 9222
 audit_log = "~/.local/state/zenpilot/audit.jsonl"
 report_dir = "~/.local/state/zenpilot/reports"
+audit_redact_urls = false                # true: leave ?query and #fragment out of the log
+upload_dirs = []                         # folders Claude may upload files from, e.g. ["~/Documents/CV"]
 dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 allow_scripts = false                    # true: enables the javascript_tool tool
 show_actions = true                      # false: no cursor/click overlay before actions
@@ -123,9 +131,8 @@ capture_actions = false                  # true: save a screenshot per mutating 
 upload_dirs = []                         # extra folders file_upload may send files from
 ```
 
-`file_upload` only sends files that live under `~/.local/state/zenpilot/uploads` or under a folder in `upload_dirs` (symlinks resolved). Copy a file there first, or add its folder to `upload_dirs`.
-
-Set `ZENPILOT_CONFIG=/path/to/config.toml` to use a different config file.
+Uploads need one Firefox setting (`dom.file.createInChild`) in the profile. zenpilot adds it
+once `upload_dirs` isn't empty, and it takes effect the next time Zen starts.
 
 ## Good to know
 
@@ -142,10 +149,8 @@ git clone https://github.com/beSaif/zenpilot.git && cd zenpilot
 uv sync && uv run zenpilot setup     # points Claude at your clone
 uv run pytest -m "not integration"   # unit tests
 uv run pytest                        # all tests, needs Zen running (zenpilot launch)
+ZENPILOT_TEST_PORT=9333 uv run pytest   # against a second Zen on a test profile
 ```
-
-Pushing a `v*` tag that matches `pyproject.toml` publishes to PyPI and makes a GitHub
-release with the `.mcpb`.
 
 ## License
 
