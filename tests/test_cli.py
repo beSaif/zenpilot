@@ -1,6 +1,7 @@
 """Profile handling, config editing and client registration, without touching the real Zen or Claude."""
 
 import json
+import subprocess
 import sys
 
 import pytest
@@ -156,3 +157,51 @@ def test_log_prints_a_timeline(tmp_path, monkeypatch, capsys):
     assert out[2].endswith("✗ Unknown tab id 't5'")
     cli.log(type("Args", (), {"n": 1, "errors": True}))
     assert capsys.readouterr().out.count("\n") == 1
+
+
+@pytest.fixture
+def tool_env(tmp_path, monkeypatch):
+    """zenpilot running from a `uv tool install` of 0.4.1, with uv, the upgrade and the restart faked."""
+    tools = tmp_path / "tools"
+    monkeypatch.setenv("UV_TOOL_DIR", str(tools))
+    monkeypatch.delenv("ZENPILOT_UPDATED", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(tools / "zenpilot"))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/opt/bin/uv")
+    env = {"installed": "0.4.1", "on_pypi": "0.4.1", "calls": []}
+    monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: env["installed"])
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: env["calls"].append(("restart", path)))
+
+    def run(cmd, **kw):
+        env["calls"].append(("run", cmd[1:]))
+        env["installed"] = env["on_pypi"]
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    return env
+
+
+def test_update_restarts_into_a_newer_version(tool_env):
+    tool_env["on_pypi"] = "0.4.3"
+    cli._update()
+    assert tool_env["calls"] == [("run", ["tool", "upgrade", "zenpilot"]), ("restart", sys.argv[0])]
+    assert cli.os.environ["ZENPILOT_UPDATED"] == "1"  # the restarted one doesn't check again
+
+
+def test_update_runs_the_installed_version_when_nothing_is_newer(tool_env):
+    cli._update()
+    assert tool_env["calls"] == [("run", ["tool", "upgrade", "zenpilot"])]
+
+
+def test_update_leaves_a_clone_or_the_desktop_extension_alone(tool_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "zenpilot-clone/.venv"))
+    cli._update()
+    assert tool_env["calls"] == []
+
+
+def test_update_offline_or_slow_runs_the_installed_version(tool_env, monkeypatch):
+    def slow(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 20)
+
+    monkeypatch.setattr(cli.subprocess, "run", slow)
+    cli._update()
+    assert tool_env["calls"] == [] and tool_env["installed"] == "0.4.1"

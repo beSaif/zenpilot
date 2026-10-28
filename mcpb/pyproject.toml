@@ -3,6 +3,6 @@
 # never waits for uv's cached PyPI index to list a release that just came out.
 [project]
 name = "zenpilot-mcpb"
-version = "0.4.2"
+version = "0.4.3"
 requires-python = ">=3.12"
 dependencies = ["zenpilot>=0.4.1"]

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import importlib.metadata
 import json
 import os
 import shutil
@@ -270,6 +271,28 @@ def log(args) -> int:
     return 0
 
 
+def _update() -> None:
+    """Upgrade a `uv tool install` of zenpilot before serving, and restart into the new version.
+
+    Offline or slow, the installed version runs. A clone, the Desktop extension (which updates
+    itself) or a version pinned at install time is left alone.
+    """
+    data = Path(os.environ.get("XDG_DATA_HOME") or "~/.local/share").expanduser()
+    tools = Path(os.environ.get("UV_TOOL_DIR") or data / "uv/tools").expanduser().resolve()
+    uv = shutil.which("uv")
+    if os.environ.get("ZENPILOT_UPDATED") or not uv or Path(sys.prefix).resolve() != tools / NAME:
+        return
+    before = importlib.metadata.version(NAME)
+    env = {**os.environ, "UV_HTTP_TIMEOUT": "8", "UV_HTTP_RETRIES": "0"}
+    try:  # its output would corrupt the MCP channel on stdout
+        subprocess.run([uv, "tool", "upgrade", NAME], capture_output=True, timeout=20, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if importlib.metadata.version(NAME) != before:
+        os.environ["ZENPILOT_UPDATED"] = "1"  # once per start
+        os.execv(sys.argv[0], sys.argv)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog=NAME, description="With no command, runs the MCP server that Claude starts.")
     parser.add_argument("--check", action="store_true", help=argparse.SUPPRESS)  # old name for doctor
@@ -295,6 +318,7 @@ def main() -> None:
 
     command = "doctor" if args.check else args.command
     if command is None:
+        _update()
         import anyio
 
         from .server import serve

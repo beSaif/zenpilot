@@ -36,7 +36,8 @@ uv tool install zenpilot
 zenpilot setup
 ```
 
-Update it with `uv tool upgrade zenpilot`.
+It updates itself to the newest release each time Claude Code starts it (offline, the
+installed version runs). To stay on one version, install it pinned: `uv tool install zenpilot==0.4.3`.
 
 Setup asks which Zen profile to use and which sites Claude may visit. Then it connects
 zenpilot to Claude Code (and Claude Desktop, if you have it) and opens Zen. Restart Claude
