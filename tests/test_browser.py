@@ -160,3 +160,24 @@ async def test_stop_on_the_badge_is_the_users_not_zenpilots_click():
     assert not b.stopped
     b._on_message(stop)
     assert b.stopped
+
+
+async def test_the_badge_says_claude_may_be_waiting_between_calls(monkeypatch):
+    b = FakeBrowser([])
+    shown = []
+
+    async def badge(context, state, action=None):
+        shown.append(state)
+
+    monkeypatch.setattr(b, "_badge", badge)
+    monkeypatch.setattr(Browser, "connected", True)
+    b._badges.add("c1")
+    b._busy = 1  # a tool call is running
+    await b._show_waiting()
+    assert shown == []
+    b._busy = 0
+    await b._show_waiting()
+    assert shown == ["waiting"]
+    b.stopped = True  # Stopped stays on the badge
+    await b._show_waiting()
+    assert shown == ["waiting"]

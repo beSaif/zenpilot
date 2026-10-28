@@ -25,6 +25,7 @@ SPECIAL_KEYS = {"\n": (SHIFT, ENTER), "\t": "\ue004"}
 # several Claude Code sessions take turns. Zen renames every tab and node in a new
 # session, so tabs get their old ids back by URL, and refs are found again by role and name.
 IDLE_RELEASE_SECONDS = 120
+WAITING_SECONDS = 8  # with no tool call for this long, the badge says Claude may be waiting for the user
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
 MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 
@@ -32,7 +33,9 @@ MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 # and a Stop button) and a glow around the page in the logo's orange.
 # It runs in a sandbox, so the page's scripts can't reach it or fake its button, and sits in
 # a closed shadow root outside <body>, so read_page and get_text don't see it.
-# state: "on", "stopped", "hidden" (for screenshots) or "off".
+# The host gets the top z-index itself: as a fixed element it's a stacking context, so the
+# z-indexes inside only order its own children, and a page's sticky header would cover the glow.
+# state: "on", "waiting" (no tool call for a while), "stopped", "hidden" (for screenshots) or "off".
 BADGE_JS = """(state, send, action) => {
   let b = globalThis.zenpilotBadge;
   if (state === "off") { b?.host.remove(); globalThis.zenpilotBadge = null; return; }
@@ -40,7 +43,8 @@ BADGE_JS = """(state, send, action) => {
     const host = document.createElement("zenpilot-badge");
     const root = host.attachShadow({mode: "closed"});
     root.innerHTML = `<style>
-      :host { all: initial !important; display: block !important; position: fixed !important; width: 0; height: 0; }
+      :host { all: initial !important; display: block !important; position: fixed !important;
+        z-index: 2147483647 !important; width: 0; height: 0; }
       :host([hidden]) { display: none !important; }
       .edge { position: fixed; inset: 0; pointer-events: none; z-index: 2147483646;
         box-shadow: inset 0 0 4px 1px rgba(232, 96, 60, .9), inset 0 0 16px 3px rgba(232, 96, 60, .5),
@@ -57,6 +61,7 @@ BADGE_JS = """(state, send, action) => {
       .stopped { padding-right: 12px; }
       .stopped svg { filter: grayscale(1); opacity: .7; }
       .stopped ~ .edge, .stopped button { display: none; }
+      .waiting ~ .edge { animation: none; opacity: .45; }
       button { all: unset; cursor: pointer; padding: 4px 10px; border-radius: 999px;
         background: rgba(255, 255, 255, .14); font-weight: 600; }
       button:hover { background: rgba(255, 255, 255, .24); }
@@ -75,7 +80,9 @@ BADGE_JS = """(state, send, action) => {
   b.host.hidden = state === "hidden";
   if (state === "hidden") return;
   b.pill.classList.toggle("stopped", state === "stopped");
+  b.pill.classList.toggle("waiting", state === "waiting");
   if (state === "stopped") b.text.textContent = "Stopped";
+  else if (state === "waiting") b.text.textContent = "Claude may be waiting for you";
   else if (action != null) b.text.textContent = action;
 }""".replace("LOGO", (files("zenpilot") / "logo.svg").read_text().strip())
 
@@ -274,6 +281,7 @@ class Browser:
         self._last_used: str | None = None  # tab zenpilot last opened, switched to or navigated
         self._busy = 0
         self._idle_timer: asyncio.TimerHandle | None = None
+        self._waiting_timer: asyncio.TimerHandle | None = None
         self.refs = Refs()
         self._outlines: dict[str, list[str]] = {}  # context -> its lines at the latest read, to report changes
         self._badges: set[str] = set()  # contexts showing the badge
@@ -353,8 +361,9 @@ class Browser:
     @asynccontextmanager
     async def session(self, port: int):
         """Hold the BiDi session for one tool call; release it after a quiet period."""
-        if self._idle_timer:
-            self._idle_timer.cancel()
+        for timer in (self._idle_timer, self._waiting_timer):
+            if timer:
+                timer.cancel()
         self._busy += 1
         try:
             await self.connect(port)
@@ -363,6 +372,13 @@ class Browser:
             self._busy -= 1
             loop = asyncio.get_running_loop()
             self._idle_timer = loop.call_later(IDLE_RELEASE_SECONDS, lambda: loop.create_task(self._release_if_idle()))
+            self._waiting_timer = loop.call_later(WAITING_SECONDS, lambda: loop.create_task(self._show_waiting()))
+
+    async def _show_waiting(self) -> None:
+        """Between calls, Claude may be asking the user something in its own app; say so on the badge."""
+        if self._busy == 0 and not self.stopped and self.connected:
+            for context in list(self._badges):
+                await self._badge(context, "waiting")
 
     async def _release_if_idle(self) -> None:
         async with self._lock:
