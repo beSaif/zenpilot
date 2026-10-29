@@ -65,6 +65,14 @@
       "description": "Choose an option in a dropdown (by ref): a <select>, a combobox or a listbox."
     },
     {
+      "name": "hover",
+      "description": "Move the mouse over an element by ref, to open menus or show tooltips."
+    },
+    {
+      "name": "press_key",
+      "description": "Press keys in a tab, e.g. \"Enter\", \"Tab\", \"Escape\" or \"ctrl+a\". Separate several with spaces."
+    },
+    {
       "name": "upload",
       "description": "Attach files to a file input (by ref), as if the user picked them."
     },
@@ -79,6 +87,10 @@
     {
       "name": "get_text",
       "description": "Readable main text of the page (prefers <main> or a single <article>)."
+    },
+    {
+      "name": "wait_for",
+      "description": "Wait until everything given holds: text is on the page, the ref's element is visible, the URL contains url_contains."
     },
     {
       "name": "report_limitation",
