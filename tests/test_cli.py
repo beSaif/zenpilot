@@ -226,3 +226,26 @@ def test_update_offline_or_slow_runs_the_installed_version(tool_env, monkeypatch
     monkeypatch.setattr(cli.subprocess, "run", slow)
     cli._update()
     assert tool_env["calls"] == [] and tool_env["installed"] == "0.4.1"
+
+
+def test_default_profile_follows_zens_install_default(zen_dir):
+    assert zen.resolve(zen.ZEN_DEFAULT) == zen_dir / "Profiles/abc.zenpilot"
+    assert zen.default_profile_name() == "zenpilot"
+
+
+def test_default_profile_needs_an_install_default(zen_dir):
+    (zen_dir / "profiles.ini").write_text("[General]\nVersion=2\n")
+    with pytest.raises(zen.ZenError, match="no default profile"):
+        zen.resolve(zen.ZEN_DEFAULT)
+
+
+def test_launch_default_uses_the_real_name_and_safety_prefs(zen_dir, monkeypatch):
+    profile = zen_dir / "Profiles/abc.zenpilot"
+    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)
+    monkeypatch.setattr(zen, "holder", lambda path: None)
+    opened = []
+    monkeypatch.setattr(zen, "port_open", lambda port: bool(opened))
+    monkeypatch.setattr(zen.subprocess, "run", lambda cmd, **kw: opened.append(cmd))
+    assert zen.launch(zen.ZEN_DEFAULT, 9222) is True
+    assert opened[0][opened[0].index("-P") + 1] == "zenpilot"
+    assert zen.is_safe(profile)  # same safety pref as any profile
