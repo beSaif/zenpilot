@@ -290,7 +290,9 @@ class Browser:
         self._busy_input = False  # an input action is running
         self.stopped = False  # the user pressed Stop on the badge
         self.allowlist: Config | None = None  # the latest config; decides which tabs devtools records
-        self.devtools = Devtools(self._recordable)
+        self.devtools = Devtools(self._recordable, self._on_recording)
+        self._collectors: dict[str, str] = {}  # context -> response data collector id, for recorded tabs only
+        self._collecting: set[str] = set()  # contexts whose collector is being added
 
     # -- connection -------------------------------------------------------
 
@@ -323,6 +325,7 @@ class Browser:
                             "browsingContext.navigationStarted",
                             "browsingContext.load",
                             "browsingContext.contextCreated",
+                            "browsingContext.contextDestroyed",
                             "script.message",
                             "log.entryAdded",
                             "network.beforeRequestSent",
@@ -332,26 +335,24 @@ class Browser:
                         ]
                     },
                 )
-                for c in (await bidi.send("browsingContext.getTree", {"maxDepth": 0}))["contexts"]:
-                    self.devtools.set_url(c["context"], c["url"])
-                try:  # response bodies are kept for network_request; if Zen refuses, it reports them unavailable
-                    await bidi.send(
-                        "network.addDataCollector", {"dataTypes": ["response"], "maxEncodedDataSize": 2_000_000}
-                    )
-                except BiDiError:
-                    pass
+                contexts = (await bidi.send("browsingContext.getTree", {"maxDepth": 0}))["contexts"]
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
             bidi.on("script.message", self._on_message)
             bidi.on("browsingContext.navigationStarted", self._on_url)
             bidi.on("browsingContext.contextCreated", self._on_url)
+            bidi.on("browsingContext.contextDestroyed", self._on_destroyed)
             bidi.on("log.entryAdded", self.devtools.on_log)
             bidi.on("network.beforeRequestSent", self.devtools.on_before_request)
             bidi.on("network.responseStarted", self.devtools.on_response_started)
             bidi.on("network.responseCompleted", self.devtools.on_response_completed)
             bidi.on("network.fetchError", self.devtools.on_fetch_error)
             self._bidi = bidi
+            self._collectors.clear()  # collectors belong to the session that added them
+            self._collecting.clear()
+            for c in contexts:
+                self.devtools.set_url(c["context"], c["url"])
 
     def _recordable(self, url: str) -> bool:
         """Whether devtools may record a tab at this URL: its domain is on the allowlist."""
@@ -365,6 +366,47 @@ class Browser:
 
     def _on_url(self, params: dict) -> None:
         self.devtools.set_url(params["context"], params.get("url") or "")
+
+    def _on_destroyed(self, params: dict) -> None:
+        self.devtools.forget(params["context"])
+
+    def _on_recording(self, context: str, recording: bool) -> None:
+        """Give a tab a response data collector while it's recorded, and take it back when it stops."""
+        loop = asyncio.get_running_loop()
+        if recording:
+            if self._bidi is None or context in self._collectors or context in self._collecting:
+                return
+            self._collecting.add(context)
+            loop.create_task(self._add_collector(self._bidi, context))
+        else:
+            self._collecting.discard(context)
+            if (cid := self._collectors.pop(context, None)) and self._bidi is not None:
+                loop.create_task(self._remove_collector(self._bidi, cid))
+
+    async def _add_collector(self, bidi: BiDi, context: str) -> None:
+        """Keep response bodies for one tab only. If Zen refuses, its bodies stay unavailable."""
+        try:
+            cid = (
+                await bidi.send(
+                    "network.addDataCollector",
+                    {"dataTypes": ["response"], "maxEncodedDataSize": 2_000_000, "contexts": [context]},
+                )
+            )["collector"]
+        except (BiDiError, ConnectionError, TimeoutError):
+            cid = None
+        self._collecting.discard(context)
+        if cid is None:
+            return
+        if bidi is self._bidi and self.devtools.recording(context):
+            self._collectors[context] = cid
+        else:
+            await self._remove_collector(bidi, cid)
+
+    async def _remove_collector(self, bidi: BiDi, cid: str) -> None:
+        try:
+            await bidi.send("network.removeDataCollector", {"collector": cid})
+        except (BiDiError, ConnectionError, TimeoutError):
+            pass  # the collector ends with its session
 
     def _new_session(self, port: int) -> None:
         """Forget this session's context ids; tabs are matched to their ids on the next getTree."""

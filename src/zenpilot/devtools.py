@@ -42,8 +42,15 @@ class Devtools:
     and loses what it recorded. Events from tabs with no known URL are dropped.
     """
 
-    def __init__(self, allowed: Callable[[str], bool], max_console: int = 500, max_network: int = 500):
+    def __init__(
+        self,
+        allowed: Callable[[str], bool],
+        on_recording: Callable[[str, bool], None] | None = None,
+        max_console: int = 500,
+        max_network: int = 500,
+    ):
         self._allowed = allowed
+        self._on_recording = on_recording  # called when a tab starts or stops being recorded
         self._urls: dict[str, str] = {}  # context -> its current URL
         self._console: deque[dict] = deque(maxlen=max_console)
         self._network: OrderedDict[str, dict] = OrderedDict()
@@ -54,12 +61,28 @@ class Devtools:
 
     def set_url(self, context: str, url: str) -> None:
         """Record a tab's current URL. Leaving the allowlist drops what the tab recorded."""
+        was = self.recording(context)
         self._urls[context] = url
-        if not self._recording(context):
+        now = self.recording(context)
+        if not now:
             self.clear_console(context)
             self.clear_network(context)
+        if was != now and self._on_recording:
+            self._on_recording(context, now)
 
-    def _recording(self, context: str | None) -> bool:
+    def forget(self, context: str) -> None:
+        """Drop a destroyed tab: its URL, its buffers and its recording."""
+        was = self.recording(context)
+        self._urls.pop(context, None)
+        self.clear_console(context)
+        self.clear_network(context)
+        if was and self._on_recording:
+            self._on_recording(context, False)
+
+    def recording_contexts(self) -> list[str]:
+        return [c for c in self._urls if self.recording(c)]
+
+    def recording(self, context: str | None) -> bool:
         url = self._urls.get(context)
         return url is not None and self._allowed(url)
 
@@ -67,7 +90,7 @@ class Devtools:
 
     def on_log(self, params: dict) -> None:
         context = (params.get("source") or {}).get("context")
-        if not self._recording(context):
+        if not self.recording(context):
             return
         frames = (params.get("stackTrace") or {}).get("callFrames") or []
         frame = frames[0] if frames else {}
@@ -89,7 +112,7 @@ class Devtools:
         if params.get("navigation"):
             # Each redirect hop of a navigation is a request, so this follows the tab to its final URL.
             self.set_url(context, req.get("url") or "")
-        if not self._recording(context):
+        if not self.recording(context):
             return
         rid = req["request"]
         hops = params.get("redirectCount", 0)
@@ -184,7 +207,7 @@ class Devtools:
     def _entry(self, params: dict) -> dict | None:
         """The request's entry, or None when its tab isn't recorded. A response with no entry gets one."""
         context = params.get("context")
-        if not self._recording(context):
+        if not self.recording(context):
             return None
         rid = params["request"]["request"]
         if rid not in self._network:

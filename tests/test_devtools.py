@@ -181,3 +181,25 @@ def test_formatting():
     assert format_requests(dt.requests()) == f"r1  GET  500  script  300 ms  42 B  {OK}api"
     assert format_console([]) == "No console messages."
     assert format_requests([]) == "No requests recorded."
+
+
+def test_recording_changes_are_reported():
+    events = []
+    dt = Devtools(allowed, on_recording=lambda context, recording: events.append((context, recording)))
+    dt.set_url("c1", OK)
+    dt.set_url("c1", OK + "again")
+    dt.set_url("c1", MAIL)
+    dt.set_url("c2", MAIL)
+    assert events == [("c1", True), ("c1", False)]
+
+
+def test_forgotten_tab_is_dropped_everywhere():
+    events = []
+    dt = Devtools(allowed, on_recording=lambda context, recording: events.append((context, recording)))
+    dt.set_url("c1", OK)
+    dt.on_log(log("c1", "a"))
+    dt.forget("c1")
+    assert dt.console() == []
+    assert not dt.recording("c1")
+    assert dt.recording_contexts() == []
+    assert events[-1] == ("c1", False)
