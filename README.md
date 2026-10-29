@@ -62,9 +62,9 @@ bottom-left corner says so. Press **Stop** on it and Claude stops and asks you w
 it tries again anyway, a popup asks whether to let it continue.
 
 Claude can open, switch and close tabs, go to a URL, read the page, click, type, pick from
-dropdowns, hover, press keys, wait for text or a URL, scroll and take screenshots. It can attach files to upload, but only from folders
-you list in `upload_dirs`. It can't touch cookies, passwords or downloads, and it can't run its
-own JavaScript.
+dropdowns, hover, press keys, wait for text or a URL, scroll and take screenshots. It can
+attach files to upload, but only from folders you list in `upload_dirs`. It can't touch
+cookies, passwords or downloads, and it can't run its own JavaScript.
 
 ## When it gets stuck
 
