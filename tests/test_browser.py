@@ -181,3 +181,68 @@ async def test_the_badge_says_claude_may_be_waiting_between_calls(monkeypatch):
     b.stopped = True  # Stopped stays on the badge
     await b._show_waiting()
     assert shown == ["waiting"]
+
+
+def test_parse_keys_names_chords_and_plus():
+    from zenpilot import browser as b
+
+    assert b.parse_keys("Enter Tab") == [b.ENTER, ""]
+    assert b.parse_keys("ctrl+a") == [("", "a")]
+    assert b.parse_keys("shift+Tab Escape") == [("", ""), ""]
+    assert b.parse_keys("+ a") == ["+", "a"]
+    with pytest.raises(BrowserError, match="Unknown key 'Bogus'"):
+        b.parse_keys("Bogus")
+    with pytest.raises(BrowserError, match="No keys given"):
+        b.parse_keys("  ")
+
+
+async def test_wait_for_polls_until_the_text_shows(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+    answers = iter([False, False, True])
+
+    async def run(context, fn, *args, timeout=15):
+        return next(answers)
+
+    async def url_of(context):
+        return "https://ok.com/"
+
+    fb.run, fb.url_of = run, url_of
+    seen = []
+    tab = {"id": "t1", "context": "a"}
+    assert await fb.wait_for(tab, text="Saved", key=None, url_contains=None, timeout_ms=1000, allowed=seen.append)
+    assert seen == ["https://ok.com/"] * 3  # the site is checked on every poll
+
+
+async def test_wait_for_url_and_timeout(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+
+    async def run(context, fn, *args, timeout=15):
+        return False
+
+    async def url_of(context):
+        return "https://ok.com/login"
+
+    fb.run, fb.url_of = run, url_of
+    tab = {"id": "t1", "context": "a"}
+    assert (
+        await fb.wait_for(tab, text=None, key=None, url_contains="done", timeout_ms=30, allowed=lambda u: None) is False
+    )
+    assert await fb.wait_for(tab, text=None, key=None, url_contains="login", timeout_ms=30, allowed=lambda u: None)
+
+
+async def test_wait_for_ends_early_when_the_user_presses_stop(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+    fb.stopped = True
+    with pytest.raises(BrowserError, match="pressed Stop"):
+        await fb.wait_for(
+            {"id": "t1", "context": "a"}, text="x", key=None, url_contains=None, timeout_ms=1000, allowed=lambda u: None
+        )
