@@ -93,6 +93,18 @@
       "description": "Wait until everything given holds: text is on the page, the ref's element is visible, the URL contains url_contains."
     },
     {
+      "name": "read_console_messages",
+      "description": "Console messages a tab logged while it was on an allowlisted site, oldest first."
+    },
+    {
+      "name": "read_network_requests",
+      "description": "Network requests a tab made while it was on an allowlisted site, oldest first."
+    },
+    {
+      "name": "network_request",
+      "description": "Headers (sensitive ones redacted) and response body of one request from read_network_requests."
+    },
+    {
       "name": "report_limitation",
       "description": "Tell the zenpilot developers about something you couldn't do in Zen with these tools."
     }
