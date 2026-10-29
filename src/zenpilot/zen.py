@@ -13,6 +13,7 @@ ZEN_APP = Path("/Applications/Zen.app")
 ZEN_BIN = ZEN_APP / "Contents/MacOS/zen"
 ZEN_DIR = Path("~/Library/Application Support/zen").expanduser()
 DEFAULT_PROFILE = "zenpilot"  # the dedicated, logged-out profile zenpilot creates
+ZEN_DEFAULT = "default"  # alias for Zen's own default profile (the one a plain Zen start opens)
 
 # With remote debugging, Firefox's remote agent rewrites ~40 prefs for test automation
 # (Safe Browsing, password saving, popup blocker, ...) and Zen persists them. This stops it.
@@ -49,6 +50,22 @@ def profile_path(name: str) -> Path | None:
     return _profiles().get(name)
 
 
+def install_default_path() -> Path | None:
+    """The profile Zen opens when started without -P: the [Install...] Default entry of profiles.ini."""
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read(ZEN_DIR / "profiles.ini")
+    for section in ini.sections():
+        if section.startswith("Install") and "Default" in ini[section]:
+            return ZEN_DIR / ini[section]["Default"]
+    return None
+
+
+def default_profile_name() -> str | None:
+    """The name of the profile Zen opens by default, as Zen lists it in profiles.ini."""
+    default = install_default_path()
+    return next((n for n, p in _profiles().items() if p == default), None)
+
+
 def describe(name: str) -> str:
     """A hint for telling profiles apart, since most are named like 'Default (release)'."""
     path = profile_path(name)
@@ -63,6 +80,10 @@ def describe(name: str) -> str:
 
 def resolve(name: str) -> Path:
     """The profile's folder. Only the dedicated profile is created when missing, so a typo can't make one."""
+    if name == ZEN_DEFAULT:
+        if path := install_default_path():
+            return path
+        raise ZenError("Zen has no default profile in profiles.ini. Run `zenpilot setup` and pick another one.")
     if path := profile_path(name):
         return path
     if name != DEFAULT_PROFILE:
@@ -146,6 +167,13 @@ def launch(
     if port_open(port):
         return False
     path = resolve(name)
+    if name == ZEN_DEFAULT:  # `open -P` needs the profile's real name
+        real = default_profile_name()
+        if real is None:
+            raise ZenError(
+                "Zen's default profile has no name in profiles.ini. Run `zenpilot setup` and pick another one."
+            )
+        name = real
     ensure_prefs(path, [SAFE_PREF, *(prefs or [])])  # before Zen reads user.js, or remote debugging weakens it
     if pid := holder(path):
         question = (

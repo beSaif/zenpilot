@@ -89,6 +89,10 @@ and URLs lose their `?query` part. Still, read it before you submit.
 - **Stick to the `zenpilot` profile if you can.** It's logged out of everything. On your main
   profile, a shady page could try to trick Claude into doing stuff in your accounts, so only
   allow sites you trust.
+- **`profile = "default"` follows Zen's own default profile.** You don't need its internal name
+  (like `Default (release)`), and it follows if you change your Zen default. zenpilot sets the
+  same safety prefs in its user.js as for any profile you pick, so the warning above applies:
+  only allow sites you trust.
 - **Read-only mode.** Set `read_only = true` and Claude can look but not click or type.
 - **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`, with
   what it clicked. Typed text isn't logged, only its length. `zenpilot log` shows it as a timeline.
