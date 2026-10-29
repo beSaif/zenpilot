@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import os
+import re
 import signal
 import sys
 import time
@@ -18,6 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from . import dialogs
 from .bidi import BiDiError
 from .browser import Browser, BrowserError, FilesRefused
+from .devtools import format_console, format_requests
 from .report import SessionReport
 from .safety import (
     CONFIG_PATH,
@@ -127,6 +129,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
                 raise ToolError(f"zenpilot config error in {CONFIG_PATH}: {e}") from None
             cfg.allowlist += sorted(set(grants()) - set(cfg.allowlist))
             _cfg.set(cfg)
+            browser.allowlist = cfg
             _domain.set(None)
             _call.set((fn.__name__, kwargs))
             _marked.set(None)
@@ -474,6 +477,138 @@ async def get_text(tab_id: str | None = None, max_chars: int = 8000) -> str:
     tab = await _tab(tab_id)
     title, text = await browser.get_text(tab, max(100, min(max_chars, 100_000)))
     return untrusted(f"# {title}\n\n{text}", tab["url"])
+
+
+BODY_MAX_CHARS = 100_000  # longest body network_request returns, in characters
+
+
+def _pattern(pattern: str | None) -> re.Pattern | None:
+    if pattern is None:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error as e:
+        raise BrowserError(f"Invalid regex {pattern!r}: {e}") from None
+
+
+def _status_spec(status: str | None) -> int | str | None:
+    # "200" becomes an int; "2xx" and "400-499" stay as range strings.
+    if status is None:
+        return None
+    text = status.strip().lower()
+    if text.isdigit():
+        return int(text)
+    if re.fullmatch(r"[1-5]xx|\d{3}-\d{3}", text):
+        return text
+    raise BrowserError(f"Invalid status {status!r}. Use 200, 2xx or a range such as 400-499.")
+
+
+def _header_lines(headers: list[dict]) -> list[str]:
+    return [f"{h['name']}: {h['value']}" for h in headers] or ["(none)"]
+
+
+@tool()
+async def read_console_messages(
+    tab_id: str | None = None,
+    pattern: str | None = None,
+    only_errors: bool = False,
+    limit: int = 100,
+    clear: bool = False,
+) -> str:
+    """Console messages a tab logged while it was on an allowlisted site, oldest first.
+
+    pattern is a regex matched against the message text. only_errors keeps level "error".
+    limit keeps the newest messages. clear=true empties the tab's console buffer after reading.
+    """
+    tab = await _tab(tab_id)
+    regex = _pattern(pattern)
+    entries = [
+        e
+        for e in browser.devtools.console(tab["context"], "error" if only_errors else None)
+        if regex is None or regex.search(e["text"] or "")
+    ]
+    text = format_console(entries[-max(1, limit) :])
+    if clear:
+        browser.devtools.clear_console(tab["context"])
+    return untrusted(text, tab["url"])
+
+
+@tool()
+async def read_network_requests(
+    tab_id: str | None = None,
+    url_pattern: str | None = None,
+    method: str | None = None,
+    status: str | None = None,
+    resource_type: str | None = None,
+    limit: int = 100,
+    clear: bool = False,
+) -> str:
+    """Network requests a tab made while it was on an allowlisted site, oldest first.
+
+    url_pattern is a substring of the URL. status is 200, 2xx or a range such as 400-499.
+    Pass an id to network_request for headers and body. limit keeps the newest requests.
+    clear=true empties the tab's network buffer after reading.
+    """
+    tab = await _tab(tab_id)
+    entries = browser.devtools.requests(
+        tab["context"],
+        url_contains=url_pattern,
+        method=method,
+        status=_status_spec(status),
+        resource_type=resource_type,
+    )
+    text = format_requests(entries[-max(1, limit) :])
+    if clear:
+        browser.devtools.clear_network(tab["context"])
+    return untrusted(text, tab["url"])
+
+
+@tool()
+async def network_request(request_id: str, max_body_chars: int = 20000) -> str:
+    """Headers (sensitive ones redacted) and response body of one request from read_network_requests.
+
+    The body is only fetched for a request to an allowlisted site, and is cut to max_body_chars.
+    """
+    entry = browser.devtools.request(request_id.strip())
+    if entry is None:
+        raise BrowserError(f"Unknown request id '{request_id}'. Call read_network_requests for current ids.")
+    url = entry["url"] or ""
+    _domain.set(domain_of(url))
+    try:
+        check_url(url, _cfg.get())
+    except Blocked:
+        body = f"[not shown: {domain_of(url)} is not on the allowlist]"
+    else:
+        if entry["error"] is not None:
+            body = "[no body: the request failed]"
+        elif entry["status"] is None:
+            body = "[no body: the request is still in progress]"
+        else:
+            try:
+                text, binary = await browser.response_body(entry["id"])
+            except (BrowserError, BiDiError):
+                body = "[body unavailable: Zen did not keep it]"
+            else:
+                limit = max(100, min(max_body_chars, BODY_MAX_CHARS))
+                if binary:
+                    body = "[binary body, not shown]"
+                elif len(text) > limit:
+                    body = f"{text[:limit]}\n[truncated: showing {limit} of {len(text)} characters]"
+                else:
+                    body = text or "[empty body]"
+    lines = [
+        format_requests([entry]),
+        "",
+        "Request headers:",
+        *_header_lines(entry["request_headers"]),
+        "",
+        "Response headers:",
+        *_header_lines(entry["response_headers"]),
+        "",
+        "Body:",
+        body,
+    ]
+    return untrusted("\n".join(lines), url)
 
 
 @mcp.tool(structured_output=False)

@@ -13,7 +13,8 @@ from urllib.parse import urlsplit
 import websockets
 
 from .bidi import BiDi, BiDiError
-from .safety import load_state, save_state, untrusted
+from .devtools import Devtools
+from .safety import Blocked, Config, check_url, load_state, save_state, untrusted
 from .tree import MAX_ITEMS, WALKER_JS, Item, Ref, Refs, mark_unique, render, unwrap
 
 # BiDi errors that mean "this node or frame no longer exists".
@@ -288,6 +289,8 @@ class Browser:
         self._acted = 0.0  # when the last input action ended
         self._busy_input = False  # an input action is running
         self.stopped = False  # the user pressed Stop on the badge
+        self.allowlist: Config | None = None  # the latest config; decides which tabs devtools records
+        self.devtools = Devtools(self._recordable)
 
     # -- connection -------------------------------------------------------
 
@@ -321,14 +324,47 @@ class Browser:
                             "browsingContext.load",
                             "browsingContext.contextCreated",
                             "script.message",
+                            "log.entryAdded",
+                            "network.beforeRequestSent",
+                            "network.responseStarted",
+                            "network.responseCompleted",
+                            "network.fetchError",
                         ]
                     },
                 )
+                for c in (await bidi.send("browsingContext.getTree", {"maxDepth": 0}))["contexts"]:
+                    self.devtools.set_url(c["context"], c["url"])
+                try:  # response bodies are kept for network_request; if Zen refuses, it reports them unavailable
+                    await bidi.send(
+                        "network.addDataCollector", {"dataTypes": ["response"], "maxEncodedDataSize": 2_000_000}
+                    )
+                except BiDiError:
+                    pass
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
             bidi.on("script.message", self._on_message)
+            bidi.on("browsingContext.navigationStarted", self._on_url)
+            bidi.on("browsingContext.contextCreated", self._on_url)
+            bidi.on("log.entryAdded", self.devtools.on_log)
+            bidi.on("network.beforeRequestSent", self.devtools.on_before_request)
+            bidi.on("network.responseStarted", self.devtools.on_response_started)
+            bidi.on("network.responseCompleted", self.devtools.on_response_completed)
+            bidi.on("network.fetchError", self.devtools.on_fetch_error)
             self._bidi = bidi
+
+    def _recordable(self, url: str) -> bool:
+        """Whether devtools may record a tab at this URL: its domain is on the allowlist."""
+        if self.allowlist is None:
+            return False
+        try:
+            check_url(url, self.allowlist)
+        except Blocked:
+            return False
+        return True
+
+    def _on_url(self, params: dict) -> None:
+        self.devtools.set_url(params["context"], params.get("url") or "")
 
     def _new_session(self, port: int) -> None:
         """Forget this session's context ids; tabs are matched to their ids on the next getTree."""
