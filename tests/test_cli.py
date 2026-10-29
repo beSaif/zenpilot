@@ -228,31 +228,24 @@ def test_update_offline_or_slow_runs_the_installed_version(tool_env, monkeypatch
     assert tool_env["calls"] == [] and tool_env["installed"] == "0.4.1"
 
 
-def test_default_profile_is_zens_install_default(zen_dir):
+def test_default_profile_follows_zens_install_default(zen_dir):
     assert zen.resolve(zen.ZEN_DEFAULT) == zen_dir / "Profiles/abc.zenpilot"
-    assert not (zen_dir / "Profiles/abc.zenpilot/user.js").exists()  # resolve never writes it
+    assert zen.default_profile_name() == "zenpilot"
 
 
-def test_default_profile_needs_an_install_default(zen_dir, monkeypatch):
+def test_default_profile_needs_an_install_default(zen_dir):
     (zen_dir / "profiles.ini").write_text("[General]\nVersion=2\n")
     with pytest.raises(zen.ZenError, match="no default profile"):
         zen.resolve(zen.ZEN_DEFAULT)
 
 
-def test_launch_default_attaches_without_a_second_instance(zen_dir, monkeypatch):
-    cmd = zen.launch_command(zen.ZEN_DEFAULT, 9222)
-    assert cmd == ["open", "-a", str(zen.ZEN_APP), "--args", "--remote-debugging-port", "9222"]
-    assert zen.launch_command("zenpilot", 9222)[:3] == ["open", "-na", str(zen.ZEN_APP)]  # named ones unchanged
-
-
-def test_launch_default_never_writes_user_js(zen_dir, monkeypatch):
+def test_launch_default_uses_the_real_name_and_safety_prefs(zen_dir, monkeypatch):
     profile = zen_dir / "Profiles/abc.zenpilot"
-    user_js = profile / "user.js"
     monkeypatch.setattr(zen, "ZEN_APP", zen_dir)
     monkeypatch.setattr(zen, "holder", lambda path: None)
-    monkeypatch.setattr(zen, "port_open", lambda port: bool(opened))
     opened = []
+    monkeypatch.setattr(zen, "port_open", lambda port: bool(opened))
     monkeypatch.setattr(zen.subprocess, "run", lambda cmd, **kw: opened.append(cmd))
     assert zen.launch(zen.ZEN_DEFAULT, 9222) is True
-    assert opened and "-P" not in opened[0]
-    assert not user_js.exists()
+    assert opened[0][opened[0].index("-P") + 1] == "zenpilot"
+    assert zen.is_safe(profile)  # same safety pref as any profile

@@ -37,7 +37,6 @@ from .safety import (
 from .zen import (
     DEFAULT_PROFILE,
     UPLOAD_PREF,
-    ZEN_DEFAULT,
     ZenError,
     describe,
     ensure_prefs,
@@ -443,11 +442,6 @@ async def upload(ref: str, paths: list[str]) -> str:
         return await browser.upload(ref, files)
     except FilesRefused:
         profile = cfg.profile or DEFAULT_PROFILE
-        if profile == ZEN_DEFAULT:
-            raise ZenError(
-                f"Zen can't take files: uploads need {UPLOAD_PREF[0]} in the profile's user.js, and zenpilot never "
-                "writes to Zen's default profile. Ask the user to run `zenpilot setup` and pick a dedicated profile."
-            ) from None
         ensure_prefs(resolve(profile), [UPLOAD_PREF])
         raise ZenError(
             f"Zen can't take files until it restarts once: uploads need the {UPLOAD_PREF[0]} pref, which zenpilot "
