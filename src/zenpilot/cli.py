@@ -92,10 +92,17 @@ def _yes(question: str) -> bool:
 
 
 def _pick_profile(current: str | None) -> str:
-    names = [zen.DEFAULT_PROFILE, *(n for n in zen.profile_names() if n != zen.DEFAULT_PROFILE)]
+    names = [
+        zen.DEFAULT_PROFILE,
+        zen.ZEN_DEFAULT,
+        *(n for n in zen.profile_names() if n not in (zen.DEFAULT_PROFILE, zen.ZEN_DEFAULT)),
+    ]
     print("Which Zen profile should Claude use?")
     for i, n in enumerate(names, 1):
-        note = "separate and logged out of everything; recommended" if n == zen.DEFAULT_PROFILE else zen.describe(n)
+        if n == zen.ZEN_DEFAULT:
+            note = "Zen's default profile, with your logins; zenpilot never writes to it"
+        else:
+            note = "separate and logged out of everything; recommended" if n == zen.DEFAULT_PROFILE else zen.describe(n)
         print(f"  {i}) {n} ({note})")
     print("Your everyday profile is usually the one open now. With it, Claude can use sites")
     print("you're logged into, after you allow each one.")
@@ -114,9 +121,12 @@ def setup(args) -> int:
     name = args.profile or (_pick_profile(cfg.profile) if interactive else cfg.profile or zen.DEFAULT_PROFILE)
     existed = zen.profile_path(name) is not None
     path = zen.resolve(name)  # creates only the dedicated profile, so a typo can't make a new one
-    print(f"✓ Zen profile '{name}'" + ("" if existed else " created"))
-    added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF, *_prefs(cfg)])
-    print(f"✓ Set {', '.join(added)} in its user.js" if added else "✓ Its user.js already has zenpilot's prefs")
+    if name == zen.ZEN_DEFAULT:
+        print(f"✓ Zen's default profile ({path.name}); zenpilot leaves its user.js as it is")
+    else:
+        print(f"✓ Zen profile '{name}'" + ("" if existed else " created"))
+        added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF, *_prefs(cfg)])
+        print(f"✓ Set {', '.join(added)} in its user.js" if added else "✓ Its user.js already has zenpilot's prefs")
     if name != cfg.profile:
         set_config_value("profile", name)
         print(f'✓ Set profile = "{name}" in {CONFIG_PATH}')
@@ -171,10 +181,25 @@ def doctor(args) -> int:
     if granted := _grants():
         print(f"  for now: {granted}")
     report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
-    path = zen.profile_path(cfg.profile) if cfg.profile else None
-    if cfg.profile is None:
+    path = None
+    if cfg.profile == zen.ZEN_DEFAULT:
+        path = zen.install_default_path()
+        report(
+            bool(path),
+            f"Zen's default profile ({path.name if path else ''})",
+            "Zen has no default profile in profiles.ini. Run `zenpilot setup`.",
+        )
+        if cfg.upload_dirs:
+            print(
+                f"· Uploads need {zen.UPLOAD_PREF[0]} in its user.js, which zenpilot won't write to the default profile"
+            )
+    elif cfg.profile is None:
         print("· No Zen profile chosen yet; you'll be asked on first use, or run `zenpilot setup`")
-    elif report(bool(path), f"Zen profile '{cfg.profile}'", f"No Zen profile '{cfg.profile}'. Run `zenpilot setup`."):
+    elif report(
+        bool(path := zen.profile_path(cfg.profile)),
+        f"Zen profile '{cfg.profile}'",
+        f"No Zen profile '{cfg.profile}'. Run `zenpilot setup`.",
+    ):
         report(
             zen.is_safe(path),
             f"{zen.SAFE_PREF[0]} is off in its user.js",

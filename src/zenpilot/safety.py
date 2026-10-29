@@ -28,7 +28,8 @@ read_only = false
 dangerously_allow_all_sites = false
 
 # Zen profile zenpilot drives. Until it's set, you're asked on first use (or by
-# `zenpilot setup`); "zenpilot" is a dedicated, logged-out profile.
+# `zenpilot setup`); "zenpilot" is a dedicated, logged-out profile. "default" is Zen's own
+# default profile, with your logins: zenpilot attaches to it and never writes its user.js.
 # profile = "zenpilot"
 
 # Port Zen listens on (--remote-debugging-port).
