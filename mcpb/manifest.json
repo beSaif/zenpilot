@@ -53,6 +53,10 @@
       "description": "Outline of the page's visible interactive elements and text."
     },
     {
+      "name": "read_console",
+      "description": "Console messages and uncaught errors the page logged, oldest first, up to limit (max 200)."
+    },
+    {
       "name": "click",
       "description": "Click an element by ref (from read_page) with a real mouse event."
     },
