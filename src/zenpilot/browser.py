@@ -21,6 +21,39 @@ STALE_ERRORS = {"no such node", "no such element", "stale element reference", "d
 ENTER, BACKSPACE, SHIFT = "\ue007", "\ue003", "\ue008"  # WebDriver key codes
 # Shift+Enter makes a line break in chat composers too, where plain Enter would send.
 SPECIAL_KEYS = {"\n": (SHIFT, ENTER), "\t": "\ue004"}
+MODIFIERS = {
+    "ctrl": "\ue009",
+    "control": "\ue009",
+    "shift": SHIFT,
+    "alt": "\ue00a",
+    "option": "\ue00a",
+    "cmd": "\ue03d",
+    "command": "\ue03d",
+    "meta": "\ue03d",
+}
+NAMED_KEYS = {
+    "enter": ENTER,
+    "return": ENTER,
+    "tab": "\ue004",
+    "escape": "\ue00c",
+    "esc": "\ue00c",
+    "backspace": BACKSPACE,
+    "delete": "\ue017",
+    "insert": "\ue016",
+    "space": " ",
+    "arrowup": "\ue013",
+    "arrowdown": "\ue015",
+    "arrowleft": "\ue012",
+    "arrowright": "\ue014",
+    "home": "\ue011",
+    "end": "\ue010",
+    "pageup": "\ue00e",
+    "pagedown": "\ue00f",
+    **{f"f{n}": chr(0xE031 + n - 1) for n in range(1, 13)},
+}
+WAIT_TEXT_JS = '(t) => (document.body?.innerText || "").includes(t)'
+WAIT_VISIBLE_JS = "(el) => el.isConnected && el.getClientRects().length > 0"
+WAIT_POLL_SECONDS = 0.25
 # Firefox allows one BiDi session. Releasing it when idle lets Claude Desktop and
 # several Claude Code sessions take turns. Zen renames every tab and node in a new
 # session, so tabs get their old ids back by URL, and refs are found again by role and name.
@@ -245,6 +278,30 @@ NO_WINDOW = (
     "Zen is running but has no open window, so there's no tab to use or open. Ask the user to open "
     "a Zen window (click Zen in the Dock), then retry."
 )
+
+
+def _key_code(name: str) -> str:
+    if name == "+":
+        return "+"
+    lower = name.lower()
+    if lower in MODIFIERS:
+        return MODIFIERS[lower]
+    if lower in NAMED_KEYS:
+        return NAMED_KEYS[lower]
+    if len(name) == 1:
+        return name
+    raise BrowserError(f"Unknown key '{name}'. Use names such as Enter, Tab, Escape, ArrowDown or ctrl+a.")
+
+
+def parse_keys(spec: str) -> list[str | tuple[str, ...]]:
+    """Space-separated keys; "ctrl+a" is a chord, returned as a tuple of key codes."""
+    keys: list[str | tuple[str, ...]] = []
+    for token in spec.split():
+        codes = tuple(_key_code(part) for part in (["+"] if token == "+" else token.split("+")))
+        keys.append(codes[0] if len(codes) == 1 else codes)
+    if not keys:
+        raise BrowserError("No keys given. Use names such as Enter, Tab or ctrl+a.")
+    return keys
 
 
 def _arg(v) -> dict:
@@ -849,6 +906,70 @@ class Browser:
             result += " Pressed Enter."
         await asyncio.sleep(0.3)  # suggestion lists and validation messages show up as you type
         return result + await self._changes(ref)
+
+    async def hover(self, key: str) -> str:
+        ref, (_, _, cover), note = await self._target(key, self._prepare)
+        origin = {"type": "element", "element": {"sharedId": ref.shared_id}}
+        await self._actions(
+            ref,
+            [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [{"type": "pointerMove", "x": 0, "y": 0, "origin": origin}],
+                }
+            ],
+        )
+        await asyncio.sleep(0.3)  # menus and tooltips take a moment to open
+        result = f"Hovered {key}{note}."
+        if cover:
+            result += f" Note: its center was covered by <{cover}>, which got the pointer."
+        return result + await self._changes(ref)
+
+    async def press(self, tab: dict, spec: str) -> str:
+        """Press keys in the tab's focused element. Reports a navigation, or what changed on the page."""
+        keys = parse_keys(spec)
+        ref = Ref(tab["id"], tab["context"], "")  # the tab itself: keys go to whatever has focus
+        if nav := await self._settle(ref, lambda: self._keys(ref, keys)):
+            return f"Pressed {spec}. {nav}."
+        return f"Pressed {spec}." + await self._changes(ref)
+
+    async def wait_for(
+        self, tab: dict, *, text: str | None, key: str | None, url_contains: str | None, timeout_ms: int, allowed
+    ) -> bool:
+        """Poll until every given condition holds, checking the site on every poll. Returns False on timeout."""
+        ref = self.ref(key) if key is not None else None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_ms / 1000
+        while True:
+            if self.stopped:
+                raise BrowserError(
+                    "The user pressed Stop on zenpilot's badge in Zen, so the wait ended. Ask them how to go on."
+                )
+            if await self._conditions_hold(tab, text, ref, url_contains, allowed):
+                return True
+            left = deadline - loop.time()
+            if left <= 0:
+                return False
+            await asyncio.sleep(min(WAIT_POLL_SECONDS, left))
+
+    async def _conditions_hold(
+        self, tab: dict, text: str | None, ref: Ref | None, url_contains: str | None, allowed
+    ) -> bool:
+        url = await self.url_of(tab["context"])
+        allowed(url)  # raises Blocked if a redirect left the allowlist
+        if url_contains is not None and url_contains not in url:
+            return False
+        if text is not None and not await self.run(tab["context"], WAIT_TEXT_JS, text):
+            return False
+        if ref is not None:
+            try:
+                if not await self.run(ref.context, WAIT_VISIBLE_JS, {"sharedId": ref.shared_id}):
+                    return False
+            except BiDiError:  # the node is gone
+                return False
+        return True
 
     async def _find_option(self, ref: Ref, option: str, wait: float) -> tuple[str, dict | None, list[str], int]:
         """Look for the option, for up to wait seconds while the list opens or filters."""
