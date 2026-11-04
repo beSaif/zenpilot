@@ -16,7 +16,11 @@ from . import zen
 from .safety import CONFIG_PATH, grants, load_config, normalize_domain, revoke, set_config_value
 
 NAME = "zenpilot"
-DESKTOP_CONFIG = Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
+DESKTOP_CONFIG = Path(
+    "~/Library/Application Support/Claude/claude_desktop_config.json"
+    if zen.MAC
+    else "~/.config/Claude/claude_desktop_config.json"  # no official Linux app; community builds use this
+).expanduser()
 CLAUDE_CODE_CONFIG = Path("~/.claude.json").expanduser()
 
 
@@ -108,8 +112,8 @@ def _pick_profile(current: str | None) -> str:
 
 def setup(args) -> int:
     cfg = load_config()
-    if not zen.ZEN_BIN.exists():
-        raise zen.ZenError(f"Zen isn't installed at {zen.ZEN_APP}. Get it from https://zen-browser.app")
+    if not zen.command():
+        raise zen.ZenError(zen.not_installed())
     interactive = _interactive() and not args.profile
     name = args.profile or (_pick_profile(cfg.profile) if interactive else cfg.profile or zen.DEFAULT_PROFILE)
     existed = zen.profile_path(name) is not None
@@ -170,7 +174,7 @@ def doctor(args) -> int:
     print(f"  allowlist: {', '.join(cfg.allowlist) or '(empty)'}")
     if granted := _grants():
         print(f"  for now: {granted}")
-    report(zen.ZEN_BIN.exists(), f"Zen installed at {zen.ZEN_APP}", f"Zen isn't installed at {zen.ZEN_APP}")
+    report(bool(zen.command()), f"Zen installed: {zen.installed_at()}", zen.not_installed())
     path = zen.profile_path(cfg.profile) if cfg.profile else None
     if cfg.profile is None:
         print("· No Zen profile chosen yet; you'll be asked on first use, or run `zenpilot setup`")
@@ -248,11 +252,23 @@ def report(args) -> int:
         return 0
     url, fits = reports.issue_url(text)
     if not fits:
-        subprocess.run(["pbcopy"], input=text, text=True, check=True)
-        print("The report is too long for a link, so it's on your clipboard: paste it into the issue.")
+        if _copy(text):
+            print("The report is too long for a link, so it's on your clipboard: paste it into the issue.")
+        else:
+            print("The report is too long for a link: paste it into the issue from the file above.")
     print(f"Opening a new GitHub issue for {path}. Check it for anything private before you submit.")
-    subprocess.run(["open", url], check=True)
+    subprocess.run(["open" if zen.MAC else "xdg-open", url], check=True)
     return 0
+
+
+def _copy(text: str) -> bool:
+    """Put text on the clipboard. False if this machine has no tool for it."""
+    tools = [["pbcopy"]] if zen.MAC else [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]]
+    for cmd in tools:
+        if shutil.which(cmd[0]):
+            subprocess.run(cmd, input=text, text=True, check=True)
+            return True
+    return False
 
 
 def _target(r: dict) -> str:

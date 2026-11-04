@@ -86,6 +86,8 @@ class SessionReport:
     def render(self) -> str:
         mac = platform.mac_ver()[0]
         env = [f"zenpilot {_version()}", f"macOS {mac}" if mac else platform.platform(terse=True)]
+        if desktop := os.environ.get("XDG_CURRENT_DESKTOP"):
+            env.append(f"{desktop} ({os.environ.get('XDG_SESSION_TYPE', '?')})")
         if self.zen_version:
             env.append(f"Zen {self.zen_version}")
         env += [

@@ -43,6 +43,7 @@ from .zen import (
     launch,
     port_open,
     profile_names,
+    quit_keys,
     resolve,
 )
 from .zen import version as zen_version
@@ -261,7 +262,7 @@ def _grant(domain: str, cfg: Config, url: str = "") -> bool | None:
         ["Don't Allow", session, always],
         "Don't Allow",
     )
-    if answer is None:  # timed out: maybe nobody was at the Mac, so not a no
+    if answer is None:  # timed out: maybe nobody was at the computer, so not a no
         return None
     if answer == always:
         set_config_value("allowlist", [*load_config().allowlist, domain])
@@ -445,8 +446,8 @@ async def upload(ref: str, paths: list[str]) -> str:
         ensure_prefs(resolve(profile), [UPLOAD_PREF])
         raise ZenError(
             f"Zen can't take files until it restarts once: uploads need the {UPLOAD_PREF[0]} pref, which zenpilot "
-            f"has now set in profile \u201c{profile}\u201d. Ask the user to quit Zen (Cmd+Q); the next zenpilot "
-            "call reopens it."
+            f"has now set in profile \u201c{profile}\u201d. Ask the user to quit Zen ({quit_keys()}); "
+            "the next zenpilot call reopens it."
         ) from None
 
 
@@ -485,7 +486,7 @@ async def report_limitation(goal: str, problem: str, workaround: str = "") -> st
     works after a workaround. goal: what you were trying to do, in a few words, like "pick a
     date on a booking form". problem: what you tried and what happened, naming the elements, refs'
     roles and errors. workaround: what worked instead, if anything. It's saved on the user's
-    Mac for them to review and file as a GitHub issue, so leave out personal data and anything
+    computer for them to review and file as a GitHub issue, so leave out personal data and anything
     the user typed.
     """
     try:
