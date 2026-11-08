@@ -1,6 +1,7 @@
 """Profile handling, config editing and client registration, without touching the real Zen or Claude."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -68,11 +69,11 @@ def test_resolve_creates_the_dedicated_profile(zen_dir, monkeypatch):
 def fake_launch(zen_dir, monkeypatch):
     """launch() with the port, the profile lock, quitting and `open` faked."""
     calls = []
-    monkeypatch.setattr(zen, "ZEN_APP", zen_dir)  # exists, like an installed Zen.app
+    monkeypatch.setattr(zen, "command", lambda: ["zen"])  # like an installed Zen
     monkeypatch.setattr(zen, "port_open", lambda port: bool(calls and calls[-1][0] == "open"))
     monkeypatch.setattr(zen, "holder", lambda path: 123)
     monkeypatch.setattr(zen, "quit_zen", lambda pid, path: calls.append(("quit", pid)))
-    monkeypatch.setattr(zen.subprocess, "run", lambda cmd, **kw: calls.append(("open", cmd[cmd.index("-P") + 1])))
+    monkeypatch.setattr(zen, "_start", lambda cmd, name, port: calls.append(("open", name)))
     return calls
 
 
@@ -84,7 +85,45 @@ def test_launch_reopens_an_open_profile_only_when_confirmed(zen_dir, fake_launch
     questions = []
     assert zen.launch("zenpilot", 9222, lambda q: questions.append(q) or True) is True
     assert fake_launch == [("quit", 123), ("open", "zenpilot")]
-    assert "Your tabs will be restored" in questions[0]
+    assert "Quit and reopen Zen" in questions[0]
+
+
+needs_proc = pytest.mark.skipif(sys.platform != "linux", reason="needs /proc")
+
+
+@needs_proc
+def test_holder_reads_the_linux_lock_symlink(tmp_path, monkeypatch):
+    monkeypatch.setattr(zen, "MAC", False)
+    assert zen.holder(tmp_path) is None
+    (tmp_path / "lock").symlink_to(f"127.0.0.1:+{os.getpid()}")
+    assert zen.holder(tmp_path) == os.getpid()
+    (tmp_path / "lock").unlink()
+    (tmp_path / "lock").symlink_to("127.0.0.1:+4194303")  # a stale lock left by a crash
+    assert zen.holder(tmp_path) is None
+
+
+@needs_proc
+def test_quit_zen_leaves_other_processes_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(zen, "MAC", False)
+    killed = []
+    monkeypatch.setattr(zen.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(zen, "holder", lambda profile: None)
+    with pytest.raises(zen.ZenError, match="can't stop it"):
+        zen.quit_zen(os.getpid(), tmp_path)  # this is pytest, not Zen
+    assert killed == []
+
+
+def test_command_finds_zen_on_linux(tmp_path, monkeypatch):
+    monkeypatch.setattr(zen, "MAC", False)
+    monkeypatch.setattr(zen, "LINUX_BINS", [tmp_path / "zen"])
+    monkeypatch.setattr(zen.shutil, "which", lambda name: None)
+    monkeypatch.delenv("ZENPILOT_ZEN", raising=False)
+    monkeypatch.setattr(zen.Path, "home", lambda: tmp_path)
+    assert zen.command() is None
+    (tmp_path / "zen").touch()
+    assert zen.command() == [str(tmp_path / "zen")]
+    monkeypatch.setenv("ZENPILOT_ZEN", "flatpak run app.zen_browser.zen")
+    assert zen.command() == ["flatpak", "run", "app.zen_browser.zen"]
 
 
 def test_launch_skips_when_port_is_taken(monkeypatch):

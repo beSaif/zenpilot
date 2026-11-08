@@ -18,11 +18,18 @@ Claude Code, kind of like Claude in Chrome but for Zen.
 There's no browser extension. zenpilot opens Zen with its remote control turned on and
 talks to it directly.
 
-> **Alpha.** Only tested on macOS with Zen 1.23.
+> **Alpha.** Built and tested on macOS with Zen 1.23. Linux support is newer: it's been tried on NixOS (Wayland) with Zen 1.23.
 
 ## Install
 
-You need a Mac with Zen in `/Applications`.
+You need a Mac with Zen in `/Applications`, or Linux with Zen installed (on `PATH`, in `/opt/zen`,
+`~/.local/share/zen` or as the Flatpak). If zenpilot can't find it, set `ZENPILOT_ZEN` to the
+command that starts it.
+
+**Linux:** popups use `zenity` (or `kdialog`) and `notify-send`, so install one of them. Without
+any, zenpilot can't ask you, so allow sites ahead of time with `zenpilot allow <site>`.
+Claude Desktop has no Linux app, so use Claude Code.
+
 
 **Claude Desktop:** download `zenpilot-<version>.mcpb` from the
 [latest release](https://github.com/beSaif/zenpilot/releases/latest) and open it. That's it.
@@ -50,7 +57,7 @@ The first time, a few popups may show up. Only you see them, not Claude:
 - **Which profile?** `zenpilot` is a fresh profile that isn't logged in to anything. Pick
   your own profile if you want Claude to use sites you're logged into.
 - **Reopen Zen?** If Zen is already open without remote control, zenpilot offers to restart
-  it. Your tabs come back.
+  it. Your tabs come back on a Mac; on Linux, tabs you opened in the last few seconds may not.
 - **Allow this site?** Claude only works on sites you allow. Choose *Don't Allow*, *Allow
   for 12 Hours* or *Always Allow*. If you miss it, it asks again next time. After *Don't
   Allow* it waits 10 minutes before asking again, or run `zenpilot allow <site>`.
@@ -91,7 +98,7 @@ and URLs lose their `?query` part. Still, read it before you submit.
 - **Read-only mode.** Set `read_only = true` and Claude can look but not click or type.
 - **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`, with
   what it clicked. Typed text isn't logged, only its length. `zenpilot log` shows it as a timeline.
-- **Remote control is open while Zen runs this way.** Other apps on your Mac could connect
+- **Remote control is open while Zen runs this way.** Other apps on your computer could connect
   to it too, and some sites (banks, Cloudflare checks) may think you're a bot. When you're
   done, quit Zen and open it normally.
 
