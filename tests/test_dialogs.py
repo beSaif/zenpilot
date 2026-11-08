@@ -32,7 +32,13 @@ BUTTONS = ["Don't Allow", "Allow for 8 Hours", "Always Allow"]
 
 @pytest.mark.parametrize(
     ("code", "out", "answer"),
-    [(0, "", "Don't Allow"), (1, "Always Allow\n", "Always Allow"), (1, "", "Don't Allow"), (None, "", None)],
+    [
+        (0, "", "Don't Allow"),
+        (1, "Always Allow\n", "Always Allow"),
+        (1, "", "Don't Allow"),
+        (255, "", None),
+        (None, "", None),
+    ],
 )
 def test_zenity_enter_and_escape_pick_the_default(linux, code, out, answer):
     seen = linux("zenity", code, out)
@@ -41,7 +47,9 @@ def test_zenity_enter_and_escape_pick_the_default(linux, code, out, answer):
     assert not any(a.startswith("--timeout") for a in seen["cmd"])
 
 
-@pytest.mark.parametrize(("code", "out", "answer"), [(0, "Always Allow\n", "Always Allow"), (1, "", "Don't Allow")])
+@pytest.mark.parametrize(
+    ("code", "out", "answer"), [(0, "Always Allow\n", "Always Allow"), (1, "", "Don't Allow"), (255, "", None)]
+)
 def test_kdialog_lists_the_default_first(linux, code, out, answer):
     seen = linux("kdialog", code, out)
     assert dialogs.ask("Allow?", BUTTONS, "Don't Allow") == answer

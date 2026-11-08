@@ -38,6 +38,11 @@ def _linux_tool() -> str | None:
     return next((t for t in order if shutil.which(t)), None)
 
 
+def _answer(r: subprocess.CompletedProcess | None, default: str) -> str | None:
+    """What a Linux dialog printed; OK, Esc or closing it mean the default. None if the tool failed."""
+    return r.stdout.strip() or default if r and r.returncode in (0, 1) else None
+
+
 def ask(message: str, buttons: list[str], default: str) -> str | None:
     """The button clicked, or None if the dialog timed out or couldn't be shown."""
     if MAC:
@@ -58,11 +63,11 @@ def ask(message: str, buttons: list[str], default: str) -> str | None:
         cmd += [f"--ok-label={default}", "--cancel-label=Cancel", *(f"--extra-button={b}" for b in others)]
         # Not zenity's own --timeout: on a timeout it has printed the last extra button, as if it was clicked.
         r = _run(cmd, TIMEOUT)
-        return None if r is None else r.stdout.strip() or default
+        return _answer(r, default)
     if tool == "kdialog":
         # kdialog has too few buttons: use a list with the default preselected.
         r = _pick("kdialog", message, [default, *others], TIMEOUT)
-        return None if r is None else r.stdout.strip() or default  # cancelled or closed: the safe answer
+        return _answer(r, default)
     return None
 
 

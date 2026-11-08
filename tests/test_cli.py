@@ -88,6 +88,10 @@ def test_launch_reopens_an_open_profile_only_when_confirmed(zen_dir, fake_launch
     assert "Quit and reopen Zen" in questions[0]
 
 
+needs_proc = pytest.mark.skipif(sys.platform != "linux", reason="needs /proc")
+
+
+@needs_proc
 def test_holder_reads_the_linux_lock_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(zen, "MAC", False)
     assert zen.holder(tmp_path) is None
@@ -98,6 +102,7 @@ def test_holder_reads_the_linux_lock_symlink(tmp_path, monkeypatch):
     assert zen.holder(tmp_path) is None
 
 
+@needs_proc
 def test_quit_zen_leaves_other_processes_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(zen, "MAC", False)
     killed = []
