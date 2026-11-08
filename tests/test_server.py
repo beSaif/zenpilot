@@ -159,3 +159,12 @@ async def test_read_console_fences_page_messages_and_filters(env, monkeypatch):
 
 async def test_read_console_says_when_nothing_was_logged(env):
     assert await server.read_console() == "Tab t1\nNo console messages."
+
+
+async def test_read_console_keeps_the_newest_messages_when_the_output_is_too_long(env):
+    row = {"level": "info", "type": "console", "url": "", "line": None, "time": 0}
+    server.browser.console_rows = [{**row, "text": f"{i} " + "x" * 2000} for i in range(50)]
+    out = await server.read_console()
+    assert len(out) < server.CONSOLE_OUTPUT_CHARS + 500
+    assert "[older messages cut]" in out
+    assert "info console: 49 " in out and "info console: 0 " not in out

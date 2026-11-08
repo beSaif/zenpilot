@@ -63,6 +63,7 @@ browser = Browser()
 session_report = SessionReport(zen_version=zen_version())
 _launching = asyncio.Lock()
 DECLINE_MINUTES = 10
+CONSOLE_OUTPUT_CHARS = 20_000  # the most read_console returns
 _declined: dict[str, float] = {}  # domain -> when the user said no; not asked again for a while
 _stop_told = False  # Claude has been told about the user's Stop press
 STOPPED = (
@@ -82,6 +83,7 @@ ACTIONS = {
     "navigate": ("Opening {site}", "Opened {site}"),
     "read_page": ("Reading the page", "Read the page"),
     "get_text": ("Reading the page", "Read the page"),
+    "read_console": ("Reading the console", "Read the console"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
     "click": ("Clicking {el}", "Clicked {el}"),
@@ -392,9 +394,10 @@ async def read_console(
 ) -> str:
     """Console messages and uncaught errors the page logged, oldest first, up to limit (max 200).
 
-    Only what the page logged while zenpilot was connected: zenpilot disconnects after 2 minutes
-    without tool calls, and the messages from before that are gone. level shows one level only.
-    clear empties the tab's list after reading it.
+    Only what the current page logged while zenpilot was connected: the list empties when the tab
+    navigates, and zenpilot disconnects after 2 minutes without tool calls, so messages from before
+    that are gone. Messages from iframes aren't included. Long messages are cut, and the oldest go
+    first if the output is too long. level shows one level only. clear empties the tab's list after reading it.
     """
     tab = await _tab(tab_id)
     entries = browser.console(tab, level, max(1, min(limit, CONSOLE_LIMIT)), clear)
@@ -404,7 +407,10 @@ async def read_console(
     for e in entries:
         where = f" {e['url']}:{e['line']}" if e["url"] else ""
         lines.append(f"{e['level']} {e['type']}{where}: {e['text']}")
-    return f"Tab {tab['id']}\n" + untrusted("\n".join(lines), tab["url"])
+    text = "\n".join(lines)
+    if len(text) > CONSOLE_OUTPUT_CHARS:
+        text = "[older messages cut]\n" + text[-CONSOLE_OUTPUT_CHARS:]
+    return f"Tab {tab['id']}\n" + untrusted(text, tab["url"])
 
 
 async def _check_ref(key: str) -> None:

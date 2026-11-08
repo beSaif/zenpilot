@@ -28,6 +28,7 @@ IDLE_RELEASE_SECONDS = 120
 WAITING_SECONDS = 8  # with no tool call for this long, the badge says Claude may be waiting for the user
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
 CONSOLE_LIMIT = 200  # console entries kept per tab
+CONSOLE_CHARS = 2000  # of one entry's text or URL; pages can log strings of any size
 MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 
 # The badge (zenpilot's logo and name, so it isn't taken for Claude's own browser extension,
@@ -320,6 +321,7 @@ class Browser:
                     {
                         "events": [
                             "browsingContext.navigationStarted",
+                            "browsingContext.navigationCommitted",
                             "browsingContext.load",
                             "browsingContext.contextCreated",
                             "script.message",
@@ -332,6 +334,7 @@ class Browser:
                 raise
             bidi.on("script.message", self._on_message)
             bidi.on("log.entryAdded", self._on_log)
+            bidi.on("browsingContext.navigationCommitted", self._on_navigation)
             self._bidi = bidi
 
     def _new_session(self, port: int) -> None:
@@ -463,12 +466,16 @@ class Browser:
         entry = {
             "level": params.get("level", ""),
             "type": params.get("type", ""),
-            "text": str(params.get("text", "")),
-            "url": frames[0].get("url", ""),
+            "text": str(params.get("text") or "")[:CONSOLE_CHARS],
+            "url": (frames[0].get("url") or "")[:CONSOLE_CHARS],
             "line": frames[0].get("lineNumber"),
             "time": params.get("timestamp"),
         }
         self._console.setdefault(context, deque(maxlen=CONSOLE_LIMIT)).append(entry)
+
+    def _on_navigation(self, params: dict) -> None:
+        """Each page starts with an empty list, so one site's logs never show up under the next site's name."""
+        self._console.pop(params.get("context"), None)
 
     def console(self, tab: dict, level: str | None = None, limit: int = 50, clear: bool = False) -> list[dict]:
         """The tab's latest entries, oldest first, optionally one level only. clear empties its buffer."""

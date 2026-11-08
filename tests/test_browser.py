@@ -231,3 +231,21 @@ def test_console_ignores_events_without_a_context():
     b = FakeBrowser([])
     b._on_log({"type": "console", "level": "info", "text": "orphan", "source": {"realm": "r1"}})
     assert b._console == {}
+
+
+def test_console_forgets_the_old_page_when_the_tab_navigates():
+    b = FakeBrowser([])
+    b._on_log(log_entry("a", "error", "from the old site"))
+    b._on_log(log_entry("b", "error", "other tab"))
+    b._on_navigation({"context": "a", "url": "https://next.com/"})
+    assert b.console({"context": "a"}) == []
+    assert [e["text"] for e in b.console({"context": "b"})] == ["other tab"]
+
+
+def test_console_cuts_long_entries_and_copes_with_null_text():
+    b = FakeBrowser([])
+    b._on_log(log_entry("a", "info", "x" * 100_000, url="data:" + "y" * 100_000))
+    b._on_log(log_entry("a", "info", None))
+    long, empty = b.console({"context": "a"})
+    assert len(long["text"]) == len(long["url"]) == 2000
+    assert empty["text"] == ""
