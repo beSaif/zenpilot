@@ -1,17 +1,45 @@
-"""Finding, preparing and launching Zen profiles (macOS)."""
+"""Finding, preparing and launching Zen profiles (macOS and Linux)."""
 
 import configparser
+import os
 import plistlib
 import re
+import shlex
+import shutil
+import signal
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+MAC = sys.platform == "darwin"
 ZEN_APP = Path("/Applications/Zen.app")
 ZEN_BIN = ZEN_APP / "Contents/MacOS/zen"
-ZEN_DIR = Path("~/Library/Application Support/zen").expanduser()
+FLATPAK_ID = "app.zen_browser.zen"
+# Where Linux installs that aren't on PATH put the binary (tarball, AUR, distro packages).
+LINUX_BINS = [
+    Path("/opt/zen/zen"),
+    Path("/opt/zen-browser-bin/zen-bin"),
+    Path("/usr/lib/zen/zen"),
+    Path("~/.local/share/zen/zen").expanduser(),
+    Path("~/.local/zen/zen").expanduser(),
+]
+
+
+def _data_dir() -> Path:
+    """Where Zen keeps profiles.ini. Linux has moved between ~/.zen and ~/.config/zen, so look."""
+    home = Path.home()
+    if MAC:
+        return home / "Library/Application Support/zen"
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    flatpak = home / ".var/app" / FLATPAK_ID
+    candidates = [home / ".zen", config / "zen", flatpak / ".zen", flatpak / "config/zen"]
+    return next((d for d in candidates if (d / "profiles.ini").exists()), candidates[0])
+
+
+ZEN_DIR = _data_dir()
 DEFAULT_PROFILE = "zenpilot"  # the dedicated, logged-out profile zenpilot creates
 
 # With remote debugging, Firefox's remote agent rewrites ~40 prefs for test automation
@@ -28,6 +56,41 @@ _PREF_RE = re.compile(r'^\s*user_pref\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;', re.M)
 
 class ZenError(Exception):
     """A setup or launch failure with a message for the user (or the model)."""
+
+
+def command() -> list[str] | None:
+    """The command that runs Zen, or None if it isn't installed.
+
+    On Linux, $ZENPILOT_ZEN overrides the search (it may hold a command with arguments).
+    """
+    if MAC:
+        return [str(ZEN_BIN)] if ZEN_BIN.exists() else None
+    if override := os.environ.get("ZENPILOT_ZEN"):
+        return shlex.split(override)
+    for name in ("zen", "zen-browser", "zen-bin"):
+        if found := shutil.which(name):
+            return [found]
+    for path in LINUX_BINS:
+        if path.exists():
+            return [str(path)]
+    if shutil.which("flatpak") and (Path.home() / ".var/app" / FLATPAK_ID).exists():
+        return ["flatpak", "run", FLATPAK_ID]
+    return None
+
+
+def not_installed() -> str:
+    if MAC:
+        return f"Zen isn't installed at {ZEN_APP}. Get it from https://zen-browser.app"
+    return "Can't find Zen. Install it from https://zen-browser.app, or set ZENPILOT_ZEN to the command that starts it."
+
+
+def installed_at() -> str:
+    cmd = command()
+    return str(ZEN_APP if MAC else shlex.join(cmd)) if cmd else ""
+
+
+def quit_keys() -> str:
+    return "Cmd+Q" if MAC else "Ctrl+Q"
 
 
 def _profiles() -> dict[str, Path]:
@@ -74,10 +137,15 @@ def resolve(name: str) -> Path:
 
 
 def create_profile(name: str) -> Path:
-    if not ZEN_BIN.exists():
-        raise ZenError(f"Zen isn't installed at {ZEN_APP}. Get it from https://zen-browser.app")
-    subprocess.run([str(ZEN_BIN), "-CreateProfile", name], check=True, capture_output=True, timeout=60)
+    global ZEN_DIR
+    cmd = command()
+    if not cmd:
+        raise ZenError(not_installed())
+    subprocess.run([*cmd, "-CreateProfile", name], check=True, capture_output=True, timeout=60)
     path = profile_path(name)
+    if not path and not MAC:  # Zen's first run may have picked another data folder than the one guessed
+        ZEN_DIR = _data_dir()
+        path = profile_path(name)
     if not path:
         raise ZenError(f"`zen -CreateProfile {name}` didn't register a profile in {ZEN_DIR / 'profiles.ini'}.")
     path.mkdir(parents=True, exist_ok=True)
@@ -113,6 +181,14 @@ def port_open(port: int) -> bool:
 
 def holder(profile: Path) -> int | None:
     """Pid of the Zen that has the profile open, if any."""
+    if not MAC:
+        # Firefox leaves a symlink "lock" -> "127.0.0.1:+<pid>" in the profile while it runs.
+        try:
+            target = os.readlink(profile / "lock")
+        except OSError:
+            return None
+        found = re.search(r":\+(\d+)$", target)
+        return int(found[1]) if found and Path(f"/proc/{found[1]}").exists() else None
     lock = profile / ".parentlock"
     if not lock.exists():
         return None
@@ -122,13 +198,36 @@ def holder(profile: Path) -> int | None:
 
 def quit_zen(pid: int, profile: Path, timeout: float = 30) -> None:
     """Quit one Zen instance the way Cmd+Q does, so it saves its session."""
-    js = f"ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid}).terminate"
-    subprocess.run(["osascript", "-l", "JavaScript", "-e", js], capture_output=True, check=True)
+    if MAC:
+        js = f"ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid}).terminate"
+        subprocess.run(["osascript", "-l", "JavaScript", "-e", js], capture_output=True, check=True)
+    else:
+        try:  # Firefox shuts down cleanly on SIGTERM. Check it's Zen first: a pid in a Flatpak sandbox isn't ours.
+            argv0 = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0].decode(errors="replace")
+            if not re.search(r"(zen|firefox)(?![a-z])", os.path.basename(argv0).lower()):
+                raise ZenError(f"Zen is open on this profile, but zenpilot can't stop it. Quit it ({quit_keys()}).")
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass  # already gone
     deadline = time.monotonic() + timeout
     while holder(profile):
         if time.monotonic() > deadline:
             raise ZenError("Zen didn't quit. It may be asking you to confirm closing its windows.")
         time.sleep(0.25)
+
+
+def _start(cmd: list[str], name: str, port: int) -> None:
+    args = ["-P", name, "--remote-debugging-port", str(port)]
+    if MAC:
+        subprocess.run(["open", "-na", str(ZEN_APP), "--args", *args], check=True)
+    else:  # detached, so Zen outlives the MCP server
+        subprocess.Popen(
+            [*cmd, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
 
 def launch(
@@ -150,20 +249,20 @@ def launch(
     if pid := holder(path):
         question = (
             f"Zen is open on profile \u201c{name}\u201d without remote debugging, so Claude can't use it. "
-            "Quit and reopen Zen with remote debugging? Your tabs will be restored."
+            "Quit and reopen Zen with remote debugging? "
+            + ("Your tabs will be restored." if MAC else "Tabs you opened in the last few seconds may not come back.")
         )
         if not (confirm_relaunch and confirm_relaunch(question)):
             raise ZenError(
                 f"Zen profile '{name}' is open without remote debugging, probably because Zen was restarted "
                 "outside zenpilot (after an update, or from the Dock), and the user didn't agree to reopen it. "
-                "Ask them to quit Zen (Cmd+Q) and retry, or to run `zenpilot launch`."
+                f"Ask them to quit Zen ({quit_keys()}) and retry, or to run `zenpilot launch`."
             )
         quit_zen(pid, path)
-    if not ZEN_APP.exists():
-        raise ZenError(f"Zen isn't installed at {ZEN_APP}.")
-    subprocess.run(
-        ["open", "-na", str(ZEN_APP), "--args", "-P", name, "--remote-debugging-port", str(port)], check=True
-    )
+    cmd = command()
+    if not cmd:
+        raise ZenError(not_installed())
+    _start(cmd, name, port)
     deadline = time.monotonic() + timeout
     while not port_open(port):
         if time.monotonic() > deadline:
@@ -176,6 +275,13 @@ def launch(
 
 
 def version() -> str | None:
+    if not MAC:
+        cmd = command()
+        try:
+            out = subprocess.run([*cmd, "--version"], capture_output=True, text=True, timeout=10).stdout if cmd else ""
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.split()[-1] if out.split() else None  # "Mozilla Zen 1.23.4b"
     try:
         with (ZEN_APP / "Contents/Info.plist").open("rb") as f:
             return plistlib.load(f).get("CFBundleShortVersionString")

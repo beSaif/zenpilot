@@ -2,9 +2,9 @@
   "manifest_version": "0.4",
   "name": "zenpilot",
   "display_name": "zenpilot",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Let Claude drive the Zen browser: tabs, reading pages, clicking and typing, behind a site allowlist.",
-  "long_description": "On first use, a macOS dialog asks which Zen profile Claude should use: a separate, logged-out profile zenpilot creates, or your own. zenpilot then starts Zen with remote debugging (offering to reopen it if it's already open) and controls it over WebDriver BiDi. Sites must be allowed first: a dialog asks when Claude needs a new one. Requires Zen in /Applications. Settings: ~/.config/zenpilot/config.toml.",
+  "long_description": "On first use, a dialog asks which Zen profile Claude should use: a separate, logged-out profile zenpilot creates, or your own. zenpilot then starts Zen with remote debugging (offering to reopen it if it's already open) and controls it over WebDriver BiDi. Sites must be allowed first: a dialog asks when Claude needs a new one. Requires Zen (in /Applications on a Mac; on Linux, on PATH or set ZENPILOT_ZEN, plus zenity or kdialog for dialogs). Settings: ~/.config/zenpilot/config.toml.",
   "author": {
     "name": "beSaif",
     "url": "https://github.com/beSaif"
@@ -53,6 +53,10 @@
       "description": "Outline of the page's visible interactive elements and text."
     },
     {
+      "name": "read_console",
+      "description": "Console messages and uncaught errors the page logged, oldest first, up to limit (max 200)."
+    },
+    {
       "name": "click",
       "description": "Click an element by ref (from read_page) with a real mouse event."
     },
@@ -99,7 +103,8 @@
   ],
   "compatibility": {
     "platforms": [
-      "darwin"
+      "darwin",
+      "linux"
     ],
     "runtimes": {
       "python": ">=3.12"

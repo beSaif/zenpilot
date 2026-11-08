@@ -17,7 +17,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import dialogs
 from .bidi import BiDiError
-from .browser import Browser, BrowserError, FilesRefused
+from .browser import CONSOLE_LIMIT, Browser, BrowserError, FilesRefused
 from .report import SessionReport
 from .safety import (
     CONFIG_PATH,
@@ -43,6 +43,7 @@ from .zen import (
     launch,
     port_open,
     profile_names,
+    quit_keys,
     resolve,
 )
 from .zen import version as zen_version
@@ -63,6 +64,7 @@ browser = Browser()
 session_report = SessionReport(zen_version=zen_version())
 _launching = asyncio.Lock()
 DECLINE_MINUTES = 10
+CONSOLE_OUTPUT_CHARS = 20_000  # the most read_console returns
 _declined: dict[str, float] = {}  # domain -> when the user said no; not asked again for a while
 _stop_told = False  # Claude has been told about the user's Stop press
 STOPPED = (
@@ -84,6 +86,7 @@ ACTIONS = {
     "navigate": ("Opening {site}", "Opened {site}"),
     "read_page": ("Reading the page", "Read the page"),
     "get_text": ("Reading the page", "Read the page"),
+    "read_console": ("Reading the console", "Read the console"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
     "click": ("Clicking {el}", "Clicked {el}"),
@@ -266,7 +269,7 @@ def _grant(domain: str, cfg: Config, url: str = "") -> bool | None:
         ["Don't Allow", session, always],
         "Don't Allow",
     )
-    if answer is None:  # timed out: maybe nobody was at the Mac, so not a no
+    if answer is None:  # timed out: maybe nobody was at the computer, so not a no
         return None
     if answer == always:
         set_config_value("allowlist", [*load_config().allowlist, domain])
@@ -388,6 +391,34 @@ async def read_page(tab_id: str | None = None) -> str:
     return f"Tab {tab['id']}\n" + untrusted(outline, tab["url"])
 
 
+@tool()
+async def read_console(
+    tab_id: str | None = None,
+    level: Literal["debug", "info", "warn", "error"] | None = None,
+    clear: bool = False,
+    limit: int = 50,
+) -> str:
+    """Console messages and uncaught errors the page logged, oldest first, up to limit (max 200).
+
+    Only what the current page logged while zenpilot was connected: the list empties when the tab
+    navigates, and zenpilot disconnects after 2 minutes without tool calls, so messages from before
+    that are gone. Messages from iframes aren't included. Long messages are cut, and the oldest go
+    first if the output is too long. level shows one level only. clear empties the tab's list after reading it.
+    """
+    tab = await _tab(tab_id)
+    entries = browser.console(tab, level, max(1, min(limit, CONSOLE_LIMIT)), clear)
+    if not entries:
+        return f"Tab {tab['id']}\nNo console messages."
+    lines = []
+    for e in entries:
+        where = f" {e['url']}:{e['line']}" if e["url"] else ""
+        lines.append(f"{e['level']} {e['type']}{where}: {e['text']}")
+    text = "\n".join(lines)
+    if len(text) > CONSOLE_OUTPUT_CHARS:
+        text = "[older messages cut]\n" + text[-CONSOLE_OUTPUT_CHARS:]
+    return f"Tab {tab['id']}\n" + untrusted(text, tab["url"])
+
+
 async def _check_ref(key: str) -> None:
     url = await browser.ref_url(key)
     _domain.set(domain_of(url))
@@ -471,8 +502,8 @@ async def upload(ref: str, paths: list[str]) -> str:
         ensure_prefs(resolve(profile), [UPLOAD_PREF])
         raise ZenError(
             f"Zen can't take files until it restarts once: uploads need the {UPLOAD_PREF[0]} pref, which zenpilot "
-            f"has now set in profile \u201c{profile}\u201d. Ask the user to quit Zen (Cmd+Q); the next zenpilot "
-            "call reopens it."
+            f"has now set in profile \u201c{profile}\u201d. Ask the user to quit Zen ({quit_keys()}); "
+            "the next zenpilot call reopens it."
         ) from None
 
 
@@ -550,7 +581,7 @@ async def report_limitation(goal: str, problem: str, workaround: str = "") -> st
     works after a workaround. goal: what you were trying to do, in a few words, like "pick a
     date on a booking form". problem: what you tried and what happened, naming the elements, refs'
     roles and errors. workaround: what worked instead, if anything. It's saved on the user's
-    Mac for them to review and file as a GitHub issue, so leave out personal data and anything
+    computer for them to review and file as a GitHub issue, so leave out personal data and anything
     the user typed.
     """
     try:

@@ -246,3 +246,71 @@ async def test_wait_for_ends_early_when_the_user_presses_stop(monkeypatch):
         await fb.wait_for(
             {"id": "t1", "context": "a"}, text="x", key=None, url_contains=None, timeout_ms=1000, allowed=lambda u: None
         )
+
+
+def log_entry(context, level, text, *, type="console", url="https://x.com/app.js", line=12):
+    """A BiDi log.entryAdded event, as Zen sends it for console calls and uncaught errors."""
+    return {
+        "type": type,
+        "level": level,
+        "text": text,
+        "timestamp": 1700000000000,
+        "source": {"realm": "r1", "context": context},
+        "stackTrace": {"callFrames": [{"url": url, "lineNumber": line, "columnNumber": 3, "functionName": ""}]},
+    }
+
+
+def test_console_keeps_each_tabs_entries_apart_and_bounded():
+    b = FakeBrowser([])
+    for i in range(250):
+        b._on_log(log_entry("a", "info", f"line {i}"))
+    b._on_log(log_entry("b", "error", "other tab", type="javascript"))
+    tab_a = {"context": "a"}
+    entries = b.console(tab_a, limit=500)
+    assert len(entries) == 200
+    assert entries[0]["text"] == "line 50" and entries[-1]["text"] == "line 249"
+    assert entries[-1] == {
+        "level": "info",
+        "type": "console",
+        "text": "line 249",
+        "url": "https://x.com/app.js",
+        "line": 12,
+        "time": 1700000000000,
+    }
+    assert [e["text"] for e in b.console({"context": "b"})] == ["other tab"]
+
+
+def test_console_filters_by_level_and_clears_after_reading():
+    b = FakeBrowser([])
+    b._on_log(log_entry("a", "info", "hello"))
+    b._on_log(log_entry("a", "error", "boom", type="javascript"))
+    b._on_log(log_entry("a", "error", "again"))
+    tab = {"context": "a"}
+    assert [e["text"] for e in b.console(tab, level="error")] == ["boom", "again"]
+    assert [e["text"] for e in b.console(tab, limit=1)] == ["again"]
+    assert [e["text"] for e in b.console(tab, clear=True)] == ["hello", "boom", "again"]
+    assert b.console(tab) == []
+
+
+def test_console_ignores_events_without_a_context():
+    b = FakeBrowser([])
+    b._on_log({"type": "console", "level": "info", "text": "orphan", "source": {"realm": "r1"}})
+    assert b._console == {}
+
+
+def test_console_forgets_the_old_page_when_the_tab_navigates():
+    b = FakeBrowser([])
+    b._on_log(log_entry("a", "error", "from the old site"))
+    b._on_log(log_entry("b", "error", "other tab"))
+    b._on_navigation({"context": "a", "url": "https://next.com/"})
+    assert b.console({"context": "a"}) == []
+    assert [e["text"] for e in b.console({"context": "b"})] == ["other tab"]
+
+
+def test_console_cuts_long_entries_and_copes_with_null_text():
+    b = FakeBrowser([])
+    b._on_log(log_entry("a", "info", "x" * 100_000, url="data:" + "y" * 100_000))
+    b._on_log(log_entry("a", "info", None))
+    long, empty = b.console({"context": "a"})
+    assert len(long["text"]) == len(long["url"]) == 2000
+    assert empty["text"] == ""

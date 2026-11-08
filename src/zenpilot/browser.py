@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -60,6 +60,8 @@ WAIT_POLL_SECONDS = 0.25
 IDLE_RELEASE_SECONDS = 120
 WAITING_SECONDS = 8  # with no tool call for this long, the badge says Claude may be waiting for the user
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
+CONSOLE_LIMIT = 200  # console entries kept per tab
+CONSOLE_CHARS = 2000  # of one entry's text or URL; pages can log strings of any size
 MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 
 # The badge (zenpilot's logo and name, so it isn't taken for Claude's own browser extension,
@@ -345,6 +347,7 @@ class Browser:
         self._acted = 0.0  # when the last input action ended
         self._busy_input = False  # an input action is running
         self.stopped = False  # the user pressed Stop on the badge
+        self._console: dict[str, deque] = {}  # context -> its latest console messages and errors
 
     # -- connection -------------------------------------------------------
 
@@ -375,9 +378,11 @@ class Browser:
                     {
                         "events": [
                             "browsingContext.navigationStarted",
+                            "browsingContext.navigationCommitted",
                             "browsingContext.load",
                             "browsingContext.contextCreated",
                             "script.message",
+                            "log.entryAdded",
                         ]
                     },
                 )
@@ -385,6 +390,8 @@ class Browser:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
             bidi.on("script.message", self._on_message)
+            bidi.on("log.entryAdded", self._on_log)
+            bidi.on("browsingContext.navigationCommitted", self._on_navigation)
             self._bidi = bidi
 
     def _new_session(self, port: int) -> None:
@@ -414,6 +421,7 @@ class Browser:
                 except (BrowserError, BiDiError):
                     pass
             await self._bidi.close()
+        self._console.clear()  # the next session only sees messages logged from now on
 
     @asynccontextmanager
     async def session(self, port: int):
@@ -506,6 +514,33 @@ class Browser:
         self.stopped = True
         for context in list(self._badges):
             asyncio.get_running_loop().create_task(self._badge(context, "stopped"))
+
+    def _on_log(self, params: dict) -> None:
+        context = (params.get("source") or {}).get("context")
+        if not context:
+            return
+        frames = (params.get("stackTrace") or {}).get("callFrames") or [{}]
+        entry = {
+            "level": params.get("level", ""),
+            "type": params.get("type", ""),
+            "text": str(params.get("text") or "")[:CONSOLE_CHARS],
+            "url": (frames[0].get("url") or "")[:CONSOLE_CHARS],
+            "line": frames[0].get("lineNumber"),
+            "time": params.get("timestamp"),
+        }
+        self._console.setdefault(context, deque(maxlen=CONSOLE_LIMIT)).append(entry)
+
+    def _on_navigation(self, params: dict) -> None:
+        """Each page starts with an empty list, so one site's logs never show up under the next site's name."""
+        self._console.pop(params.get("context"), None)
+
+    def console(self, tab: dict, level: str | None = None, limit: int = 50, clear: bool = False) -> list[dict]:
+        """The tab's latest entries, oldest first, optionally one level only. clear empties its buffer."""
+        entries = self._console.get(tab["context"], deque())
+        picked = [e for e in entries if level is None or e["level"] == level][-limit:]
+        if clear:
+            self._console.pop(tab["context"], None)
+        return picked
 
     # -- tabs ---------------------------------------------------------------
 
