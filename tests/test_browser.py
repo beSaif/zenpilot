@@ -183,6 +183,95 @@ async def test_the_badge_says_claude_may_be_waiting_between_calls(monkeypatch):
     assert shown == ["waiting"]
 
 
+def test_parse_keys_names_chords_and_plus():
+    from zenpilot import browser as b
+
+    assert b.parse_keys("Enter Tab") == [b.ENTER, ""]
+    assert b.parse_keys("ctrl+a") == [("", "a")]
+    assert b.parse_keys("shift+Tab Escape") == [("", ""), ""]
+    assert b.parse_keys("+ a") == ["+", "a"]
+    with pytest.raises(BrowserError, match=r"Unknown key \(5 chars\)"):  # not the key: it may be typed text
+        b.parse_keys("Bogus")
+    with pytest.raises(BrowserError, match="No keys given"):
+        b.parse_keys("  ")
+
+
+@pytest.mark.parametrize(
+    "chord",
+    ["cmd+v", "ctrl+v", "CTRL+V", "meta+V", "ctrl+shift+v", "cmd+option+shift+v", "shift+insert", "Insert+Shift"],
+)
+def test_parse_keys_refuses_paste_chords(chord):
+    from zenpilot import browser as b
+
+    with pytest.raises(BrowserError, match="Paste shortcuts"):
+        b.parse_keys(f"Enter {chord}")
+
+
+def test_parse_keys_refuses_raw_webdriver_codes_and_keeps_near_misses():
+    from zenpilot import browser as b
+
+    with pytest.raises(BrowserError, match="Unknown key"):
+        b.parse_keys("+v")  # Meta as a raw code, which would slip past the paste check
+    assert b.parse_keys("v shift+v Insert ctrl+a") == [
+        "v",
+        (b.SHIFT, "v"),
+        b.NAMED_KEYS["insert"],
+        (b.MODIFIERS["ctrl"], "a"),
+    ]
+
+
+async def test_wait_for_polls_until_the_text_shows(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+    answers = iter([False, False, True])
+
+    async def run(context, fn, *args, timeout=15):
+        return next(answers)
+
+    async def url_of(context):
+        return "https://ok.com/"
+
+    fb.run, fb.url_of = run, url_of
+    seen = []
+    tab = {"id": "t1", "context": "a"}
+    assert await fb.wait_for(tab, text="Saved", key=None, url_contains=None, timeout_ms=1000, allowed=seen.append)
+    assert seen == ["https://ok.com/"] * 3  # the site is checked on every poll
+
+
+async def test_wait_for_url_and_timeout(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+
+    async def run(context, fn, *args, timeout=15):
+        return False
+
+    async def url_of(context):
+        return "https://ok.com/login"
+
+    fb.run, fb.url_of = run, url_of
+    tab = {"id": "t1", "context": "a"}
+    assert (
+        await fb.wait_for(tab, text=None, key=None, url_contains="done", timeout_ms=30, allowed=lambda u: None) is False
+    )
+    assert await fb.wait_for(tab, text=None, key=None, url_contains="login", timeout_ms=30, allowed=lambda u: None)
+
+
+async def test_wait_for_ends_early_when_the_user_presses_stop(monkeypatch):
+    from zenpilot import browser as b
+
+    monkeypatch.setattr(b, "WAIT_POLL_SECONDS", 0.01)
+    fb = FakeBrowser([ctx("a", "https://ok.com/")])
+    fb.stopped = True
+    with pytest.raises(BrowserError, match="pressed Stop"):
+        await fb.wait_for(
+            {"id": "t1", "context": "a"}, text="x", key=None, url_contains=None, timeout_ms=1000, allowed=lambda u: None
+        )
+
+
 def log_entry(context, level, text, *, type="console", url="https://x.com/app.js", line=12):
     """A BiDi log.entryAdded event, as Zen sends it for console calls and uncaught errors."""
     return {
