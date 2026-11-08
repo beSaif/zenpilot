@@ -37,7 +37,7 @@ class FakeBrowser:
         return rows[:limit]
 
     def ref_key(self, key):
-        return 'button "Apply"' if key == "r1" else None
+        return 'button "Apply"' if key.strip() == "r1" else None  # like Refs.get, which needs a string
 
     def ref(self, key):
         return key
@@ -160,6 +160,13 @@ async def test_press_key_is_audited_with_its_keys_redacted(env):
     config, _ = env
     assert await server.press_key(keys="ctrl+a") == "Pressed ctrl+a."
     assert records(config)[-1]["params"] == {"keys": {"chars": 6}}
+
+
+async def test_wait_for_without_a_ref_returns_its_result_and_is_audited(env):
+    config, _ = env
+    # Through MCP, as a client calls it: the omitted ref reaches the wrapper as None.
+    await server.mcp.call_tool("wait_for", {"text": "Saved"})
+    assert records(config)[-1]["tool"] == "wait_for" and records(config)[-1]["ok"]
 
 
 async def test_hover_and_press_key_are_blocked_in_read_only_mode(env, monkeypatch):

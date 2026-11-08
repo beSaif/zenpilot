@@ -190,10 +190,34 @@ def test_parse_keys_names_chords_and_plus():
     assert b.parse_keys("ctrl+a") == [("", "a")]
     assert b.parse_keys("shift+Tab Escape") == [("", ""), ""]
     assert b.parse_keys("+ a") == ["+", "a"]
-    with pytest.raises(BrowserError, match="Unknown key 'Bogus'"):
+    with pytest.raises(BrowserError, match=r"Unknown key \(5 chars\)"):  # not the key: it may be typed text
         b.parse_keys("Bogus")
     with pytest.raises(BrowserError, match="No keys given"):
         b.parse_keys("  ")
+
+
+@pytest.mark.parametrize(
+    "chord",
+    ["cmd+v", "ctrl+v", "CTRL+V", "meta+V", "ctrl+shift+v", "cmd+option+shift+v", "shift+insert", "Insert+Shift"],
+)
+def test_parse_keys_refuses_paste_chords(chord):
+    from zenpilot import browser as b
+
+    with pytest.raises(BrowserError, match="Paste shortcuts"):
+        b.parse_keys(f"Enter {chord}")
+
+
+def test_parse_keys_refuses_raw_webdriver_codes_and_keeps_near_misses():
+    from zenpilot import browser as b
+
+    with pytest.raises(BrowserError, match="Unknown key"):
+        b.parse_keys("+v")  # Meta as a raw code, which would slip past the paste check
+    assert b.parse_keys("v shift+v Insert ctrl+a") == [
+        "v",
+        (b.SHIFT, "v"),
+        b.NAMED_KEYS["insert"],
+        (b.MODIFIERS["ctrl"], "a"),
+    ]
 
 
 async def test_wait_for_polls_until_the_text_shows(monkeypatch):

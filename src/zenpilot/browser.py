@@ -31,6 +31,7 @@ MODIFIERS = {
     "command": "\ue03d",
     "meta": "\ue03d",
 }
+PASTE_MODIFIERS = {"ctrl", "control", "cmd", "command", "meta"}
 NAMED_KEYS = {
     "enter": ENTER,
     "return": ENTER,
@@ -290,16 +291,25 @@ def _key_code(name: str) -> str:
         return MODIFIERS[lower]
     if lower in NAMED_KEYS:
         return NAMED_KEYS[lower]
-    if len(name) == 1:
+    if len(name) == 1 and not "" <= name <= "":  # raw WebDriver codes would get past _is_paste
         return name
-    raise BrowserError(f"Unknown key '{name}'. Use names such as Enter, Tab, Escape, ArrowDown or ctrl+a.")
+    # Never repeat the key: it may be typed text, and errors reach the audit log and session report.
+    raise BrowserError(f"Unknown key ({len(name)} chars). Use names such as Enter, Tab, Escape, ArrowDown or ctrl+a.")
+
+
+def _is_paste(parts: list[str]) -> bool:
+    names = {p.lower() for p in parts}
+    return bool("v" in names and names & PASTE_MODIFIERS) or {"shift", "insert"} <= names
 
 
 def parse_keys(spec: str) -> list[str | tuple[str, ...]]:
     """Space-separated keys; "ctrl+a" is a chord, returned as a tuple of key codes."""
     keys: list[str | tuple[str, ...]] = []
     for token in spec.split():
-        codes = tuple(_key_code(part) for part in (["+"] if token == "+" else token.split("+")))
+        parts = ["+"] if token == "+" else token.split("+")
+        if _is_paste(parts):
+            raise BrowserError("Paste shortcuts aren't allowed: they'd put the user's clipboard into the page.")
+        codes = tuple(_key_code(part) for part in parts)
         keys.append(codes[0] if len(codes) == 1 else codes)
     if not keys:
         raise BrowserError("No keys given. Use names such as Enter, Tab or ctrl+a.")

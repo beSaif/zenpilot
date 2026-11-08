@@ -175,7 +175,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
             finally:
                 ms = (time.perf_counter() - start) * 1000
                 params = {k: ({"chars": len(v)} if k in redact else v) for k, v in kwargs.items()}
-                if "ref" in kwargs and (element := browser.ref_key(kwargs["ref"])):
+                if kwargs.get("ref") and (element := browser.ref_key(kwargs["ref"])):
                     params["element"] = element
                 try:
                     audit(cfg, fn.__name__, params, _domain.get(), ok, ms, error)
@@ -477,7 +477,8 @@ async def press_key(keys: str, tab_id: str | None = None) -> str:
     """Press keys in a tab, e.g. "Enter", "Tab", "Escape" or "ctrl+a". Separate several with spaces.
 
     The keys go to the focused element, so click or type first. Reports a navigation,
-    or what changed on the page, like click.
+    or what changed on the page, like click. Paste shortcuts are refused, to keep the
+    user's clipboard out of the page.
     """
     tab = await _tab(tab_id)
     return await browser.press(tab, keys)
