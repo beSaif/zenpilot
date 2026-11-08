@@ -17,7 +17,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import dialogs
 from .bidi import BiDiError
-from .browser import Browser, BrowserError, FilesRefused
+from .browser import CONSOLE_LIMIT, Browser, BrowserError, FilesRefused
 from .report import SessionReport
 from .safety import (
     CONFIG_PATH,
@@ -381,6 +381,30 @@ async def read_page(tab_id: str | None = None) -> str:
     tab = await _tab(tab_id)
     outline = await browser.read_page(tab, _frame_reason)
     return f"Tab {tab['id']}\n" + untrusted(outline, tab["url"])
+
+
+@tool()
+async def read_console(
+    tab_id: str | None = None,
+    level: Literal["debug", "info", "warn", "error"] | None = None,
+    clear: bool = False,
+    limit: int = 50,
+) -> str:
+    """Console messages and uncaught errors the page logged, oldest first, up to limit (max 200).
+
+    Only what the page logged while zenpilot was connected: zenpilot disconnects after 2 minutes
+    without tool calls, and the messages from before that are gone. level shows one level only.
+    clear empties the tab's list after reading it.
+    """
+    tab = await _tab(tab_id)
+    entries = browser.console(tab, level, max(1, min(limit, CONSOLE_LIMIT)), clear)
+    if not entries:
+        return f"Tab {tab['id']}\nNo console messages."
+    lines = []
+    for e in entries:
+        where = f" {e['url']}:{e['line']}" if e["url"] else ""
+        lines.append(f"{e['level']} {e['type']}{where}: {e['text']}")
+    return f"Tab {tab['id']}\n" + untrusted("\n".join(lines), tab["url"])
 
 
 async def _check_ref(key: str) -> None:
