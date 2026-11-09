@@ -69,6 +69,27 @@ def _registered(path: Path) -> str | None:
     return " ".join([entry["command"], *entry.get("args", [])]) if entry else None
 
 
+def _desktop_extensions(base: Path) -> list[tuple[str, str, bool]]:
+    """(id, version, enabled) of each zenpilot extension in Claude Desktop's folder `base`."""
+    found = []
+    for manifest in sorted(base.glob("Claude Extensions/*/manifest.json")):
+        try:
+            data = json.loads(manifest.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("name") != NAME:
+            continue
+        # The bundle updates itself, so the manifest can be older than the package that actually runs.
+        installed = sorted(manifest.parent.glob(f".venv/lib/*/site-packages/{NAME}-*.dist-info"))
+        version = installed[-1].name[len(NAME) + 1 : -len(".dist-info")] if installed else data.get("version", "?")
+        try:
+            settings = json.loads((base / "Claude Extensions Settings" / f"{manifest.parent.name}.json").read_text())
+        except (OSError, ValueError):
+            settings = {}
+        found.append((manifest.parent.name, version, settings.get("isEnabled", True)))
+    return found
+
+
 async def _print_tabs(port: int) -> bool:
     from .browser import Browser, BrowserError
 
@@ -157,6 +178,7 @@ def launch(args) -> int:
 
 def doctor(args) -> int:
     problems = 0
+    print(f"✓ zenpilot {importlib.metadata.version(NAME)} in {sys.prefix}")
 
     def report(ok: bool, good: str, bad: str) -> bool:
         nonlocal problems
@@ -203,6 +225,15 @@ def doctor(args) -> int:
     for client, file in [("Claude Code", CLAUDE_CODE_CONFIG), ("Claude Desktop", DESKTOP_CONFIG)]:
         cmd = _registered(file)
         print(f"✓ {client}: {cmd}" if cmd else f"· {client}: not registered (`zenpilot setup` does it)")
+    extensions = _desktop_extensions(DESKTOP_CONFIG.parent)
+    for ext, version, enabled in extensions:
+        print(f"✓ Claude Desktop extension {ext}: zenpilot {version}" if enabled else f"· {ext}: disabled")
+    if bool(_registered(DESKTOP_CONFIG)) + sum(enabled for *_, enabled in extensions) > 1:
+        report(
+            False,
+            "",
+            f"Claude Desktop has more than one zenpilot. Remove the extension or the entry in {DESKTOP_CONFIG}.",
+        )
     return 1 if problems else 0
 
 
