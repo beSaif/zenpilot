@@ -265,3 +265,51 @@ def test_update_offline_or_slow_runs_the_installed_version(tool_env, monkeypatch
     monkeypatch.setattr(cli.subprocess, "run", slow)
     cli._update()
     assert tool_env["calls"] == [] and tool_env["installed"] == "0.4.1"
+
+
+@pytest.fixture
+def desktop(tmp_path, monkeypatch):
+    """A Claude Desktop folder holding the extension: manifest 0.5.1, updated itself to 0.6.0."""
+    base = tmp_path / "Claude"
+    ext = base / "Claude Extensions/local.mcpb.besaif.zenpilot"
+    (ext / ".venv/lib/python3.14/site-packages/zenpilot-0.6.0.dist-info").mkdir(parents=True)
+    (ext / "manifest.json").write_text(json.dumps({"name": "zenpilot", "version": "0.5.1"}))
+    (base / "Claude Extensions Settings").mkdir()
+    monkeypatch.setattr(cli, "DESKTOP_CONFIG", base / "claude_desktop_config.json")
+    monkeypatch.setattr(cli, "CLAUDE_CODE_CONFIG", tmp_path / "claude.json")
+    monkeypatch.setattr(cli, "load_config", lambda: load_config(tmp_path / "config.toml"))
+    monkeypatch.setattr(zen, "command", lambda: ["zen"])
+    monkeypatch.setattr(zen, "installed_at", lambda: "/zen")
+    monkeypatch.setattr(zen, "port_open", lambda port: False)
+    return base
+
+
+def set_extension_enabled(base, enabled):
+    (base / "Claude Extensions Settings/local.mcpb.besaif.zenpilot.json").write_text(json.dumps({"isEnabled": enabled}))
+
+
+def register_on_desktop(base):
+    (base / "claude_desktop_config.json").write_text(json.dumps({"mcpServers": {"zenpilot": {"command": "zp"}}}))
+
+
+def test_doctor_shows_the_version_the_extension_really_runs(desktop, capsys):
+    set_extension_enabled(desktop, True)
+    assert cli.doctor(None) == 0
+    out = capsys.readouterr().out
+    assert "extension local.mcpb.besaif.zenpilot: zenpilot 0.6.0" in out
+    assert f"zenpilot {cli.importlib.metadata.version('zenpilot')} in {sys.prefix}" in out
+
+
+def test_doctor_flags_two_zenpilots_in_claude_desktop(desktop, capsys):
+    set_extension_enabled(desktop, True)
+    register_on_desktop(desktop)
+    assert cli.doctor(None) == 1
+    assert "more than one zenpilot" in capsys.readouterr().out
+
+
+def test_doctor_ignores_a_disabled_extension(desktop, capsys):
+    set_extension_enabled(desktop, False)
+    register_on_desktop(desktop)
+    assert cli.doctor(None) == 0
+    out = capsys.readouterr().out
+    assert "disabled" in out and "more than one" not in out
