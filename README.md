@@ -118,24 +118,8 @@ blocker and so on), which would otherwise happen when remote control is on.
 
 ## Settings
 
-They live in `~/.config/zenpilot/config.toml`, and changes apply right away.
-
-```toml
-allowlist = ["localhost", "127.0.0.1"]   # "example.com" covers its subdomains too
-read_only = false                        # true: Claude can look but not click or type
-profile = "zenpilot"                     # which Zen profile Claude uses
-auto_launch = true                       # open Zen when Claude needs it
-prompts = true                           # show the popups above
-port = 9222
-audit_log = "~/.local/state/zenpilot/audit.jsonl"
-report_dir = "~/.local/state/zenpilot/reports"
-audit_redact_urls = false                # true: leave ?query and #fragment out of the log
-upload_dirs = []                         # folders Claude may upload files from, e.g. ["~/Documents/CV"]
-dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
-```
-
-Uploads need one Firefox setting (`dom.file.createInChild`) in the profile. zenpilot adds it
-once `upload_dirs` isn't empty, and it takes effect the next time Zen starts.
+They live in `~/.config/zenpilot/config.toml`, and changes apply right away. See
+[all settings](https://github.com/beSaif/zenpilot/blob/main/docs/configuration.md).
 
 ## Good to know
 
@@ -147,14 +131,7 @@ once `upload_dirs` isn't empty, and it takes effect the next time Zen starts.
 
 ## Hacking on it
 
-```sh
-git clone https://github.com/beSaif/zenpilot.git && cd zenpilot
-uv sync && uv run zenpilot setup     # points Claude at your clone
-uv run pytest -m "not integration"   # unit tests
-uv run pytest                        # all tests, needs Zen running (zenpilot launch)
-ZENPILOT_TEST_PORT=9333 uv run pytest   # against a second Zen on a test profile
-scripts/live-test.sh                 # integration tests on a throwaway Zen it starts and closes
-```
+Setup and test commands are in [docs/dev/hacking.md](https://github.com/beSaif/zenpilot/blob/main/docs/dev/hacking.md).
 
 ## License
 
