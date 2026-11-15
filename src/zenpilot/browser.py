@@ -64,6 +64,13 @@ READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near
 CONSOLE_LIMIT = 200  # console entries kept per tab
 CONSOLE_CHARS = 2000  # of one entry's text or URL; pages can log strings of any size
 MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
+DIALOG_CHARS = 1000  # of a dialog's message, which the page chooses
+# Without this, Zen dismisses alert, confirm and prompt dialogs by itself, so clicking "Delete"
+# behind a "Delete this?" confirm silently does nothing. Left open, they're answered with
+# handle_dialog. beforeunload keeps its default (leave the page), so navigating never gets stuck.
+CAPABILITIES = {
+    "alwaysMatch": {"unhandledPromptBehavior": {"alert": "ignore", "confirm": "ignore", "prompt": "ignore"}}
+}
 
 # The badge (zenpilot's logo and name, so it isn't taken for Claude's own browser extension,
 # and a Stop button) and a glow around the page in the logo's orange.
@@ -277,6 +284,15 @@ class FilesRefused(BrowserError):
     """Zen can't create File objects for input.setFiles (zen.UPLOAD_PREF is off)."""
 
 
+DIALOG_OPEN = "A dialog is open in this tab and blocks the page. Answer it with handle_dialog first."
+# Firefox gives a dialog that quickly follows another a "Don't allow this site to prompt you again"
+# checkbox. BiDi neither reports nor answers that kind, so the page waits for the user.
+UNANSWERABLE = (
+    "The page seems to have a dialog open that zenpilot can't answer (Firefox's kind with a \u201cDon't allow "
+    "this site to prompt you again\u201d checkbox, shown when dialogs come quickly one after another). Ask the "
+    "user to answer it in Zen, then retry."
+)
+
 NO_WINDOW = (
     "Zen is running but has no open window, so there's no tab to use or open. Ask the user to open "
     "a Zen window (click Zen in the Dock), then retry."
@@ -358,6 +374,8 @@ class Browser:
         self._busy_input = False  # an input action is running
         self.stopped = False  # the user pressed Stop on the badge
         self._console: dict[str, deque] = {}  # context -> its latest console messages and errors
+        self._dialogs: dict[str, dict] = {}  # context -> the dialog open in it (userPromptOpened's params)
+        self._frame_tops: dict[str, str] = {}  # frame context -> its tab's, for the frames read_page read
 
     # -- connection -------------------------------------------------------
 
@@ -368,7 +386,7 @@ class Browser:
             self._new_session(port)
             bidi = BiDi(f"ws://127.0.0.1:{port}/session")
             try:
-                await bidi.connect()
+                await bidi.connect(CAPABILITIES)
             except (OSError, websockets.InvalidHandshake) as e:
                 raise BrowserError(
                     f"Can't reach Zen's remote agent on 127.0.0.1:{port} ({e}). "
@@ -393,6 +411,8 @@ class Browser:
                             "browsingContext.contextCreated",
                             "script.message",
                             "log.entryAdded",
+                            "browsingContext.userPromptOpened",
+                            "browsingContext.userPromptClosed",
                         ]
                     },
                 )
@@ -402,6 +422,8 @@ class Browser:
             bidi.on("script.message", self._on_message)
             bidi.on("log.entryAdded", self._on_log)
             bidi.on("browsingContext.navigationCommitted", self._on_navigation)
+            bidi.on("browsingContext.userPromptOpened", lambda p: self._dialogs.update({p["context"]: p}))
+            bidi.on("browsingContext.userPromptClosed", lambda p: self._dialogs.pop(p.get("context"), None))
             self._bidi = bidi
 
     def _new_session(self, port: int) -> None:
@@ -415,6 +437,8 @@ class Browser:
         self._contexts.clear()
         self._outlines.clear()
         self._badges.clear()
+        self._dialogs.clear()
+        self._frame_tops.clear()
         self._session += 1
 
     @property
@@ -543,6 +567,8 @@ class Browser:
     def _on_navigation(self, params: dict) -> None:
         """Each page starts with an empty list, so one site's logs never show up under the next site's name."""
         self._console.pop(params.get("context"), None)
+        # A frame's dialogs count for its tab again only once read_page has checked its new site.
+        self._frame_tops.pop(params.get("context"), None)
 
     def console(self, tab: dict, level: str | None = None, limit: int = 50, clear: bool = False) -> list[dict]:
         """The tab's latest entries, oldest first, optionally one level only. clear empties its buffer."""
@@ -551,6 +577,51 @@ class Browser:
         if clear:
             self._console.pop(tab["context"], None)
         return picked
+
+    def _tab_dialogs(self, top: str) -> list[str]:
+        """Contexts with a dialog open in the tab: itself, or a frame read_page read (Zen names the frame)."""
+        return [c for c in self._dialogs if top in (c, self._frame_tops.get(c))]
+
+    def _forget_dialogs(self, top: str) -> None:
+        for c in self._tab_dialogs(top):
+            del self._dialogs[c]
+
+    async def dialog_note(self, context: str) -> str:
+        """What to tell Claude about a dialog open in the tab, or ""."""
+        if not (open_ := self._tab_dialogs(context)):
+            return ""
+        d = self._dialogs[open_[0]]
+        kind = d.get("type", "")
+        how = "accept with text to type in, or dismiss" if kind == "prompt" else "accept or dismiss"
+        return (
+            f"The page opened a dialog ({kind}), which blocks it until answered. Answer it with handle_dialog "
+            f"({how}). Its message:\n"
+            + untrusted(str(d.get("message") or "")[:DIALOG_CHARS], await self.url_of(context))
+        )
+
+    async def answer_dialog(self, tab: dict, accept: bool, text: str | None) -> str:
+        """Accept or dismiss the tab's dialog. Reports a navigation, or what changed on the page."""
+        context = tab["context"]
+        kind = next((self._dialogs[c].get("type") for c in self._tab_dialogs(context)), None)
+        params = {"context": context, "accept": accept} | ({"userText": text} if text is not None else {})
+
+        async def answer():
+            try:
+                await self.call("browsingContext.handleUserPrompt", params)
+            except BiDiError as e:
+                if e.error == "no such alert":
+                    self._forget_dialogs(context)
+                    raise BrowserError(f"No dialog is open in {tab['id']}.") from None
+                if e.error == "unsupported operation":
+                    raise BrowserError(UNANSWERABLE) from None
+                raise
+            self._forget_dialogs(context)  # userPromptClosed may come after the reply
+
+        ref = Ref(tab["id"], context, "")  # the tab itself, like press
+        result = f"{'Accepted' if accept else 'Dismissed'} the {kind + ' ' if kind else ''}dialog in {tab['id']}."
+        if nav := await self._settle(ref, answer):
+            return f"{result} {nav}."
+        return result + await self._changes(ref)
 
     # -- tabs ---------------------------------------------------------------
 
@@ -665,6 +736,7 @@ class Browser:
     async def close_tab(self, tab: dict) -> None:
         await self.call("browsingContext.close", {"context": tab["context"]})
         self.refs.drop_tab(tab["id"])
+        self._forget_dialogs(tab["context"])
 
     async def navigate(self, tab: dict, url: str) -> tuple[str, bool]:
         """Navigate and wait for load. Returns (final url, still_loading)."""
@@ -708,6 +780,7 @@ class Browser:
                     if reason := frame_allowed(url):
                         item.line += f" [skipped: {reason}]"
                     else:
+                        self._frame_tops[frame["context"]] = tab["context"]
                         await collect(frame["context"], item.depth + 1)
                 except (BrowserError, BiDiError):
                     item.line += " [not readable]"
@@ -819,10 +892,24 @@ class Browser:
         return tag, kind, cover
 
     async def _actions(self, ref: Ref, actions: list[dict]) -> None:
+        top = self.top_context(ref)
+        if self._tab_dialogs(top):
+            raise BrowserError(DIALOG_OPEN)
         self._busy_input = True
+        # A dialog holds the actions' reply until it's answered, so stop waiting when one opens.
+        opened = self._bidi.expect("browsingContext.userPromptOpened", lambda p: p["context"] in (top, ref.context))
+        act = asyncio.ensure_future(self.call("input.performActions", {"context": ref.context, "actions": actions}))
         try:
-            await self.call("input.performActions", {"context": ref.context, "actions": actions})
+            await asyncio.wait({act, opened}, return_when=asyncio.FIRST_COMPLETED)
+            if act.done():
+                try:
+                    act.result()
+                except BrowserTimeout:
+                    raise BrowserTimeout(UNANSWERABLE) from None
         finally:
+            if not act.done():  # it ends when the dialog is answered; nobody waits for it now
+                act.add_done_callback(lambda t: t.cancelled() or t.exception())
+            opened.cancel()
             self._busy_input, self._acted = False, time.monotonic()
 
     async def _click(self, ref: Ref) -> None:
@@ -879,6 +966,8 @@ class Browser:
 
     async def _changes(self, ref: Ref) -> str:
         """What changed in the ref's frame since it was last read, with refs for new controls."""
+        if note := await self.dialog_note(self.top_context(ref)):
+            return "\n" + note
         old = self._outlines.get(ref.context)
         if old is None:
             return ""

@@ -1,9 +1,11 @@
 """Tab ids and refs across reconnects, with getTree and the page walker faked."""
 
+import asyncio
+
 import pytest
 
 from zenpilot.bidi import BiDiError
-from zenpilot.browser import Browser, BrowserError
+from zenpilot.browser import DIALOG_CHARS, Browser, BrowserError
 from zenpilot.tree import Item, Ref
 
 
@@ -338,3 +340,75 @@ def test_console_cuts_long_entries_and_copes_with_null_text():
     long, empty = b.console({"context": "a"})
     assert len(long["text"]) == len(long["url"]) == 2000
     assert empty["text"] == ""
+
+
+class DialogBrowser(FakeBrowser):
+    """Also answers handleUserPrompt, or fails it with error, and lets _settle wait for events that never come."""
+
+    def __init__(self, contexts, error=None):
+        super().__init__(contexts)
+        self.error, self.answered = error, []
+        self._bidi = self
+
+    def expect(self, method, predicate=None):
+        return asyncio.get_running_loop().create_future()
+
+    async def call(self, method, params=None, timeout=30):
+        if method != "browsingContext.handleUserPrompt":
+            return await super().call(method, params, timeout)
+        if self.error:
+            raise BiDiError(*self.error)
+        self.answered.append(params)
+        return {}
+
+
+def confirm(context, message):
+    return {"context": context, "type": "confirm", "message": message, "handler": "ignore"}
+
+
+async def test_an_open_dialog_is_reported_fenced_and_blocks_input():
+    b = FakeBrowser([ctx("a", "https://shop.example.com/cart")])
+    await ids(b)
+    b.pages["a"] = [Item(0, 'button "Delete"', "a", "n1", 'button "Delete"')]
+    await b.read_page(await b.tab("t1"), lambda url: None)
+    ref = b.refs.get("r1")
+    b._dialogs["a"] = confirm("a", "x" * 5000)
+    out = await b._changes(ref)
+    assert "opened a dialog (confirm)" in out and "handle_dialog (accept or dismiss)" in out
+    assert '<untrusted_web_content source="https://shop.example.com/cart">' in out  # the page wrote it
+    assert "x" * DIALOG_CHARS in out and "x" * (DIALOG_CHARS + 1) not in out
+    # The page is blocked, so input would only hang until the dialog is answered.
+    with pytest.raises(BrowserError, match="Answer it with handle_dialog first"):
+        await b._actions(ref, [])
+
+
+async def test_answering_a_prompt_types_its_text_and_forgets_the_dialog():
+    b = DialogBrowser([ctx("a", "https://shop.example.com/cart")])
+    tab = (await b.tabs(probe=False))[0]
+    b._dialogs["a"] = {**confirm("a", "Your name?"), "type": "prompt"}
+    assert await b.answer_dialog(tab, True, "Ada") == "Accepted the prompt dialog in t1."
+    assert b.answered == [{"context": "a", "accept": True, "userText": "Ada"}]
+    assert not b._dialogs
+    assert await b.dialog_note("a") == ""
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [(("no such alert", ""), "No dialog is open in t1"), (("unsupported operation", "alertCheck"), "can't answer")],
+)
+async def test_dialogs_that_cant_be_answered_are_explained(error, message):
+    b = DialogBrowser([ctx("a", "https://shop.example.com/cart")], error)
+    tab = (await b.tabs(probe=False))[0]
+    b._dialogs["a"] = confirm("a", "Delete this?")
+    with pytest.raises(BrowserError, match=message):
+        await b.answer_dialog(tab, False, None)
+
+
+async def test_a_frames_dialog_counts_for_its_tab_until_the_frame_navigates():
+    b = FakeBrowser([ctx("a", "https://shop.example.com/cart")])
+    await ids(b)
+    b._frame_tops["f"] = "a"  # read_page went into frame f
+    b._dialogs["f"] = confirm("f", "From the frame?")
+    assert "From the frame?" in await b.dialog_note("a")
+    b._on_navigation({"context": "f"})  # its new site hasn't been checked
+    assert await b.dialog_note("a") == ""

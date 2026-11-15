@@ -96,6 +96,7 @@ ACTIONS = {
     "press_key": ("Pressing keys", "Pressed keys"),  # never the keys: they may be typed text
     "wait_for": ("Waiting for the page", "Waited for the page"),
     "upload": ("Attaching files", "Attached files"),
+    "handle_dialog": ("Answering a dialog", "Answered a dialog"),
 }
 
 
@@ -174,7 +175,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
                 raise
             finally:
                 ms = (time.perf_counter() - start) * 1000
-                params = {k: ({"chars": len(v)} if k in redact else v) for k, v in kwargs.items()}
+                params = {k: ({"chars": len(v)} if k in redact and v is not None else v) for k, v in kwargs.items()}
                 if kwargs.get("ref") and (element := browser.ref_key(kwargs["ref"])):
                     params["element"] = element
                 try:
@@ -388,7 +389,8 @@ async def read_page(tab_id: str | None = None) -> str:
     """
     tab = await _tab(tab_id)
     outline = await browser.read_page(tab, _frame_reason)
-    return f"Tab {tab['id']}\n" + untrusted(outline, tab["url"])
+    dialog = await browser.dialog_note(tab["context"])
+    return f"Tab {tab['id']}\n" + untrusted(outline, tab["url"]) + (f"\n{dialog}" if dialog else "")
 
 
 @tool()
@@ -482,6 +484,17 @@ async def press_key(keys: str, tab_id: str | None = None) -> str:
     """
     tab = await _tab(tab_id)
     return await browser.press(tab, keys)
+
+
+@tool(mutates=True, redact=("text",))
+async def handle_dialog(accept: bool = True, text: str | None = None, tab_id: str | None = None) -> str:
+    """Answer the alert, confirm or prompt dialog a page opened, which blocks the page until answered.
+
+    accept=true presses OK, false presses Cancel. text is typed into a prompt before pressing OK.
+    Reports a navigation, or what changed on the page, like click.
+    """
+    tab = await _tab(tab_id)
+    return await browser.answer_dialog(tab, accept, text)
 
 
 @tool(mutates=True)

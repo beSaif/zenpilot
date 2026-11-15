@@ -31,13 +31,13 @@ class BiDi:
     def connected(self) -> bool:
         return self._reader is not None and not self._reader.done()
 
-    async def connect(self) -> dict:
+    async def connect(self, capabilities: dict | None = None) -> dict:
         """Open the socket and create a session. Returns session.new's result."""
         # websockets sends no Origin header, which the remote agent requires.
         self._ws = await websockets.connect(self.url, max_size=None, ping_interval=None)
         self._reader = asyncio.create_task(self._read_loop())
         try:
-            return await self.send("session.new", {"capabilities": {}})
+            return await self.send("session.new", {"capabilities": capabilities or {}})
         except BaseException:
             await self._ws.close()
             raise

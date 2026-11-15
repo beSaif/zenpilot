@@ -61,6 +61,9 @@ class FakeBrowser:
     async def press(self, tab, spec):
         return f"Pressed {spec}."
 
+    async def answer_dialog(self, tab, accept, text):
+        return f"{'Accepted' if accept else 'Dismissed'} the dialog in {tab['id']}."
+
     async def wait_for(self, tab, *, text, key, url_contains, timeout_ms, allowed):
         self.waited = {"text": text, "url_contains": url_contains, "timeout_ms": timeout_ms}
         allowed(self.landing)  # a redirect during the wait is checked like any navigation
@@ -235,3 +238,19 @@ async def test_read_console_keeps_the_newest_messages_when_the_output_is_too_lon
     assert len(out) < server.CONSOLE_OUTPUT_CHARS + 500
     assert "[older messages cut]" in out
     assert "info console: 49 " in out and "info console: 0 " not in out
+
+
+async def test_handle_dialog_is_audited_with_its_text_redacted(env):
+    config, _ = env
+    assert await server.handle_dialog(text="Ada Lovelace") == "Accepted the dialog in t1."
+    assert records(config)[-1]["params"] == {"text": {"chars": 12}}
+    # Through MCP, as a client calls it: the omitted text reaches the wrapper's audit as None.
+    await server.mcp.call_tool("handle_dialog", {"accept": False})
+    assert records(config)[-1]["ok"] and records(config)[-1]["params"]["text"] is None
+
+
+async def test_handle_dialog_is_blocked_in_read_only_mode(env):
+    config, _ = env
+    config.read_only = True
+    with pytest.raises(server.ToolError, match="read-only mode"):
+        await server.handle_dialog()

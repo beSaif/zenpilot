@@ -18,3 +18,7 @@ dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 
 Uploads need one Firefox setting (`dom.file.createInChild`) in the profile. zenpilot adds it
 once `upload_dirs` isn't empty, and it takes effect the next time Zen starts.
+
+zenpilot also sets `dom.successive_dialog_time_limit` to 0, so a dialog that quickly follows another
+doesn't get Firefox's "Don't allow this site to prompt you again" checkbox. Claude can't answer that
+kind, so the page would wait for you instead.
