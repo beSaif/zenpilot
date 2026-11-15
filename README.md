@@ -99,8 +99,9 @@ and URLs lose their `?query` part. Still, read it before you submit.
 - **Log.** Everything Claude does is written to `~/.local/state/zenpilot/audit.jsonl`, with
   what it clicked. Typed text isn't logged, only its length. `zenpilot log` shows it as a timeline.
 - **Remote control is open while Zen runs this way.** Other apps on your computer could connect
-  to it too, and some sites (banks, Cloudflare checks) may think you're a bot. When you're
-  done, quit Zen and open it normally.
+  to it too, and some sites (banks, Cloudflare checks) may think you're a bot. Some CAPTCHAs
+  fail however well you solve them (hCaptcha, as on Lever job forms); submit those from
+  another browser. When you're done, quit Zen and open it normally.
 
 zenpilot also stops Zen from switching off its own protections (Safe Browsing, the popup
 blocker and so on), which would otherwise happen when remote control is on.
