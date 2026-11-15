@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>dialogs</title></head>
+<body>
+<button onclick="log('confirm:' + confirm('Delete this item?'))">Delete</button>
+<button onclick="log('prompt:' + prompt('Your name?', 'Anon'))">Rename</button>
+<button onclick="alert('Saved'); log('alert:done')">Save</button>
+<iframe title="Frame" srcdoc="<button onclick=&quot;this.textContent = 'frame:' + confirm('From the frame?')&quot;>Frame confirm</button>"></iframe>
+<pre id="log" aria-label="Log"></pre>
+<script>function log(msg) { document.getElementById("log").textContent += msg + "\n"; }</script>
+</body>
+</html>

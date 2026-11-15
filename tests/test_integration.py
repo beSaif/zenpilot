@@ -405,3 +405,29 @@ async def test_tab_ids_and_refs_survive_a_reconnect(site):
             await b.close_tab(tab)
     finally:
         await b.close()
+
+
+async def test_page_dialogs_wait_for_handle_dialog(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/dialogs.html"):
+        page = await s.ok("read_page")
+        opened = await s.ok("click", ref=ref(page, "button", "Delete"))
+        assert "opened a dialog (confirm)" in opened and "Delete this item?" in opened
+        assert "handle_dialog first" in await s.err("click", ref=ref(page, "button", "Save"))  # not a 30s hang
+        page = await s.ok("read_page")
+        assert "opened a dialog (confirm)" in page  # still open, and said so
+        assert '+ "confirm:false"' in await s.ok("handle_dialog", accept=False)
+        assert "No dialog is open" in await s.err("handle_dialog")
+
+        # Back to back, as a "Saved" alert follows a prompt: DIALOG_PREF keeps Firefox from
+        # turning the second into the checkbox kind that BiDi can't answer.
+        assert "opened a dialog (prompt)" in await s.ok("click", ref=ref(page, "button", "Rename"))
+        assert "prompt:Ada" in await s.ok("handle_dialog", text="Ada")
+        assert "opened a dialog (alert)" in await s.ok("click", ref=ref(page, "button", "Save"))
+        assert "alert:done" in await s.ok("handle_dialog")
+
+        assert "opened a dialog (confirm)" in await s.ok("click", ref=ref(page, "button", "Frame confirm"))
+        await s.ok("handle_dialog")
+        assert 'button "frame:true"' in await s.ok("read_page")
+
+        audit = config.audit.read_text()
+        assert "Ada" not in audit  # a prompt's answer is typed text

@@ -50,6 +50,10 @@ WELCOME_PREF = ("zen.welcome-screen.seen", "true")
 # The one recommended automation pref uploads need: input.setFiles builds File objects in the
 # page's process. Only written once the user lists upload_dirs.
 UPLOAD_PREF = ("dom.file.createInChild", "true")
+# Another recommended one: without it, a dialog that quickly follows another (a "Deleted" alert
+# after a "Delete this?" confirm) gets a "Don't allow this site to prompt you again" checkbox,
+# and BiDi can neither see nor answer that kind, so the page stays stuck until the user does.
+DIALOG_PREF = ("dom.successive_dialog_time_limit", "0")
 
 _PREF_RE = re.compile(r'^\s*user_pref\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;', re.M)
 
@@ -245,7 +249,8 @@ def launch(
     if port_open(port):
         return False
     path = resolve(name)
-    ensure_prefs(path, [SAFE_PREF, *(prefs or [])])  # before Zen reads user.js, or remote debugging weakens it
+    # Before Zen reads user.js, or remote debugging weakens it.
+    ensure_prefs(path, [SAFE_PREF, DIALOG_PREF, *(prefs or [])])
     if pid := holder(path):
         question = (
             f"Zen is open on profile \u201c{name}\u201d without remote debugging, so Claude can't use it. "

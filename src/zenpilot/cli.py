@@ -140,7 +140,7 @@ def setup(args) -> int:
     existed = zen.profile_path(name) is not None
     path = zen.resolve(name)  # creates only the dedicated profile, so a typo can't make a new one
     print(f"✓ Zen profile '{name}'" + ("" if existed else " created"))
-    added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF, *_prefs(cfg)])
+    added = zen.ensure_prefs(path, [zen.SAFE_PREF, zen.WELCOME_PREF, zen.DIALOG_PREF, *_prefs(cfg)])
     print(f"✓ Set {', '.join(added)} in its user.js" if added else "✓ Its user.js already has zenpilot's prefs")
     if name != cfg.profile:
         set_config_value("profile", name)

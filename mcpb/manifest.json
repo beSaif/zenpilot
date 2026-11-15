@@ -77,6 +77,10 @@
       "description": "Press keys in a tab, e.g. \"Enter\", \"Tab\", \"Escape\" or \"ctrl+a\". Separate several with spaces."
     },
     {
+      "name": "handle_dialog",
+      "description": "Answer the alert, confirm or prompt dialog a page opened, which blocks the page until answered."
+    },
+    {
       "name": "upload",
       "description": "Attach files to a file input (by ref), as if the user picked them."
     },
