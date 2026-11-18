@@ -5,8 +5,9 @@ import base64
 import time
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from http.client import responses
 from importlib.resources import files
 from urllib.parse import urlsplit
 
@@ -401,6 +402,8 @@ class Browser:
         self._pages: dict[str, str] = {}  # tab context -> the URL of the page it shows
         self._network: dict[str, dict[str, dict]] = {}  # tab context -> its page's requests by id, oldest first
         self._collector: str | None = None  # Zen's store of response bodies for this session, if it has one
+        self.mocking = False  # allow_request_mocking; set per call
+        self._routes: dict[str, tuple[str, str, dict]] = {}  # intercept id -> (tab context, BiDi reply, its params)
 
     # -- connection -------------------------------------------------------
 
@@ -479,6 +482,7 @@ class Browser:
         self._badges.clear()
         self._dialogs.clear()
         self._frame_tops.clear()
+        self._routes.clear()  # Zen drops a session's intercepts when it ends
         self._session += 1
 
     @property
@@ -635,6 +639,8 @@ class Browser:
     def _on_request(self, params: dict) -> None:
         """Record a tab's request if its page is allowlisted. A page load counts for the page it loads."""
         context, req = params.get("context"), params["request"]
+        if params.get("isBlocked"):  # by a route; Zen holds it until it's answered
+            asyncio.get_running_loop().create_task(self._answer(params))
         if context not in self._pages:  # a frame's, or a tab not seen yet
             return
         page = req["url"] if params.get("navigation") else self._pages[context]
@@ -705,6 +711,48 @@ class Browser:
         if data.get("type") == "base64":
             return base64.b64decode(data["value"]), ""
         return data.get("value", "").encode(), ""
+
+    async def route(self, tab: dict, url: str, action: str, status: int, body: str, content_type: str) -> str:
+        """Make the tab's requests to url fail or get a stub response until unroute. Returns the route id."""
+        reply = ("network.failRequest", {})
+        if action == "respond":
+            reply = (
+                "network.provideResponse",
+                {
+                    "statusCode": status,
+                    "reasonPhrase": responses.get(status, ""),
+                    "headers": [{"name": "Content-Type", "value": {"type": "string", "value": content_type}}],
+                    "body": {"type": "string", "value": body},
+                },
+            )
+        intercept = {
+            "phases": ["beforeRequestSent"],
+            "urlPatterns": [{"type": "string", "pattern": url}],
+            "contexts": [tab["context"]],
+        }
+        route_id = (await self.call("network.addIntercept", intercept))["intercept"]
+        self._routes[route_id] = (tab["context"], *reply)
+        return route_id
+
+    async def unroute(self, route_id: str) -> bool:
+        if self._routes.pop(route_id.strip(), None) is None:
+            return False
+        await self.call("network.removeIntercept", {"intercept": route_id.strip()})
+        return True
+
+    async def _answer(self, params: dict) -> None:
+        """Fail or stub a request a route blocked, or let it through if its tab's page isn't allowlisted."""
+        req = params["request"]
+        route = next((self._routes[i] for i in params.get("intercepts") or [] if i in self._routes), None)
+        method, reply = "network.continueRequest", {}
+        page = req["url"] if params.get("navigation") else self._pages.get(route and route[0], "")
+        if route and self.mocking and self.allowed(page):
+            _, method, reply = route
+        try:
+            await self.call(method, {"request": req["request"]} | reply)
+        except (BrowserError, BiDiError):
+            with suppress(BrowserError, BiDiError):  # if this fails too, the session is gone, which releases it
+                await self.call("network.continueRequest", {"request": req["request"]})
 
     def _tab_dialogs(self, top: str) -> list[str]:
         """Contexts with a dialog open in the tab: itself, or a frame read_page read (Zen names the frame)."""

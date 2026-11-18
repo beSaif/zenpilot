@@ -13,6 +13,7 @@ audit_log = "~/.local/state/zenpilot/audit.jsonl"
 report_dir = "~/.local/state/zenpilot/reports"
 audit_redact_urls = false                # true: leave ?query and #fragment out of the log
 upload_dirs = []                         # folders Claude may upload files from, e.g. ["~/Documents/CV"]
+allow_request_mocking = false            # true: Claude may make a page's requests fail or return stub data
 dangerously_allow_all_sites = false      # skips the allowlist. Please don't.
 ```
 

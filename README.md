@@ -76,7 +76,9 @@ keeps its size).
 Network requests are only recorded on sites you've allowed and kept in memory, with the values of
 cookie and authorization headers left out. Claude can save them as a HAR file, in
 `~/.local/state/zenpilot/har/` or the temp folder, never overwriting one; response bodies are only
-included if asked for.
+included if asked for. If you set `allow_request_mocking = true`, Claude can also make a request to
+one exact URL fail or return stub data, to test how your app copes; this is off by default, only
+works on allowed sites and ends when zenpilot disconnects.
 It can attach files to upload, but only from folders you list in `upload_dirs`. It can't touch
 cookies, passwords or downloads, and it can't run its own JavaScript.
 

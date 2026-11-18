@@ -547,3 +547,95 @@ async def test_set_viewport_sizes_one_tab_and_resets_it_with_null():
     assert b.viewport == {"context": "b", "viewport": {"width": 390, "height": 844}}
     assert await b.set_viewport(tab, None, None) == (1200, 800)
     assert b.viewport == {"context": "b", "viewport": None}
+
+
+def routing_browser():
+    """network_browser() with request mocking on and its BiDi calls recorded. Replies to request "bad" fail."""
+    b = network_browser()
+    b.mocking, b.calls = True, []
+
+    async def call(method, params=None, timeout=30):
+        b.calls.append((method, params))
+        if method == "network.addIntercept":
+            return {"intercept": f"i{len(b.calls)}"}
+        if params.get("request") == "bad" and method != "network.continueRequest":
+            raise BiDiError("invalid argument", "no such request")
+        return {}
+
+    b.call = call
+    return b
+
+
+def blocked(context, rid, url, route, navigation=None):
+    """A network.beforeRequestSent event for a request a route's intercept holds."""
+    return sent(context, rid, url, navigation=navigation) | {"isBlocked": True, "intercepts": [route]}
+
+
+async def answers(b, *events):
+    """The BiDi calls that answer these events."""
+    b.calls.clear()
+    for e in events:
+        b._on_request(e)
+    await asyncio.sleep(0)
+    return b.calls
+
+
+def go_on(rid):
+    return ("network.continueRequest", {"request": rid})
+
+
+async def test_routes_fail_or_stub_their_tabs_requests():
+    b = routing_browser()
+    abort = await b.route({"context": "a"}, "https://ok.com/api", "abort", 200, "", "text/plain")
+    stub = await b.route({"context": "a"}, "https://ok.com/data", "respond", 503, '{"x": 1}', "application/json")
+    pattern = [{"type": "string", "pattern": "https://ok.com/api"}]
+    intercept = {"phases": ["beforeRequestSent"], "urlPatterns": pattern, "contexts": ["a"]}
+    assert b.calls[0] == ("network.addIntercept", intercept)
+    # A frame's request in the tab is held too, under the frame's context.
+    events = blocked("a", "1", "https://ok.com/api", abort), blocked("f", "2", "https://ok.com/data", stub)
+    assert await answers(b, *events) == [
+        ("network.failRequest", {"request": "1"}),
+        (
+            "network.provideResponse",
+            {
+                "request": "2",
+                "statusCode": 503,
+                "reasonPhrase": "Service Unavailable",
+                "headers": [{"name": "Content-Type", "value": {"type": "string", "value": "application/json"}}],
+                "body": {"type": "string", "value": '{"x": 1}'},
+            },
+        ),
+    ]
+    # If the reply fails, the request still goes on rather than hang.
+    assert await answers(b, blocked("a", "bad", "https://ok.com/api", abort)) == [
+        ("network.failRequest", {"request": "bad"}),
+        go_on("bad"),
+    ]
+
+
+async def test_routed_requests_go_through_off_the_allowlist_or_with_mocking_off():
+    b = routing_browser()
+    route = await b.route({"context": "a"}, "https://ok.com/api", "abort", 200, "", "text/plain")
+    b._pages["a"] = "https://bank.example/"
+    assert await answers(b, blocked("a", "1", "https://ok.com/api", route)) == [go_on("1")]
+    b._pages["a"] = "https://ok.com/app"
+    b.mocking = False  # the user turned allow_request_mocking off
+    assert await answers(b, blocked("a", "2", "https://ok.com/api", route)) == [go_on("2")]
+    # A page load counts for the page it loads.
+    b.mocking = True
+    page = await b.route({"context": "a"}, "https://bank.example/", "respond", 200, "hi", "text/html")
+    assert await answers(b, blocked("a", "3", "https://bank.example/", page, navigation="n1")) == [go_on("3")]
+
+
+async def test_unroute_removes_the_intercept_and_reconnecting_forgets_routes():
+    b = routing_browser()
+    route = await b.route({"context": "a"}, "https://ok.com/api", "abort", 200, "", "text/plain")
+    other = await b.route({"context": "a"}, "https://ok.com/x", "abort", 200, "", "text/plain")
+    b.calls.clear()
+    assert await b.unroute(route)
+    assert b.calls == [("network.removeIntercept", {"intercept": route})]
+    assert not await b.unroute(route)
+    # One still held from before the unroute goes on.
+    assert await answers(b, blocked("a", "1", "https://ok.com/api", route)) == [go_on("1")]
+    b._new_session(9222)  # Zen dropped the old session's intercepts
+    assert not await b.unroute(other)

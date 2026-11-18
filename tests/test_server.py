@@ -94,6 +94,13 @@ class FakeBrowser:
         self.viewport = (tab["id"], width, height)
         return (width, height) if width else (1200, 800)
 
+    async def route(self, tab, url, action, status, body, content_type):
+        self.routed = (tab["id"], url, action, status, body, content_type)
+        return "route1"
+
+    async def unroute(self, route_id):
+        return route_id == "route1"
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -407,3 +414,33 @@ async def test_resize_window_only_works_on_allowed_sites(env):
     with pytest.raises(server.ToolError, match="mail.example.com"):
         await server.resize_window(width=390, height=844, tab_id="t2")
     assert not hasattr(server.browser, "viewport")
+
+
+async def test_request_mocking_is_off_until_the_user_turns_it_on(env):
+    config, _ = env
+    for call in (server.network_route(url="https://ok.com/api"), server.network_unroute(route_id="route1")):
+        with pytest.raises(server.ToolError, match="set allow_request_mocking = true in"):
+            await call
+    assert not server.browser.mocking and not hasattr(server.browser, "routed")
+    config.allow_request_mocking, config.read_only = True, True
+    for call in (server.network_route(url="https://ok.com/api"), server.network_unroute(route_id="route1")):
+        with pytest.raises(server.ToolError, match="read-only mode"):
+            await call
+
+
+async def test_network_route_and_unroute(env):
+    config, _ = env
+    config.allow_request_mocking, config.prompts = True, False
+    out = await server.network_route(url="https://ok.com/api", action="respond", status=503, body="{}")
+    assert out.startswith("Route route1: requests to https://ok.com/api in t1 now get a 503 text/plain stub.")
+    assert "until zenpilot disconnects" in out and server.browser.mocking
+    assert server.browser.routed == ("t1", "https://ok.com/api", "respond", 503, "{}", "text/plain")
+    assert "now fail." in await server.network_route(url="https://ok.com/api")
+    with pytest.raises(server.ToolError, match="not on the zenpilot allowlist"):
+        await server.network_route(url="https://ok.com/api", tab_id="t2")
+    for url, status in (("file:///etc/passwd", 200), ("https://ok.com/", 600)):
+        with pytest.raises(server.ToolError, match="Only http|status must be"):
+            await server.network_route(url=url, status=status)
+    assert await server.network_unroute(route_id="route1") == "Removed route route1."
+    with pytest.raises(server.ToolError, match="No route route9. Routes end when zenpilot disconnects"):
+        await server.network_unroute(route_id="route9")

@@ -3,9 +3,11 @@
 <body>
 <p id="status">loading</p>
 <script>
-Promise.all([fetch("/data.json").then((r) => r.json()), fetch("/missing.json")]).then(() => {
-  document.getElementById("status").textContent = "fetched";
-});
+const shown = document.getElementById("status");
+Promise.all([fetch("/data.json").then((r) => r.json()), fetch("/missing.json")]).then(
+  ([data]) => (shown.textContent = `fetched: ${data.greeting}`),
+  (e) => (shown.textContent = `failed: ${e}`),
+);
 </script>
 </body>
 </html>

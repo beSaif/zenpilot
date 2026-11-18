@@ -55,10 +55,11 @@ def site():
 def config(tmp_path):
     path = tmp_path / "config.toml"
 
-    def write(allowlist=("localhost",), read_only=False, upload_dirs=()):
+    def write(allowlist=("localhost",), read_only=False, upload_dirs=(), mocking=False):
         path.write_text(
             f"allowlist = {json.dumps(list(allowlist))}\n"
             f"read_only = {'true' if read_only else 'false'}\n"
+            f"allow_request_mocking = {'true' if mocking else 'false'}\n"
             f"upload_dirs = {json.dumps([str(d) for d in upload_dirs])}\n"
             f"port = {PORT}\n"
             "prompts = false\n"
@@ -500,3 +501,24 @@ async def test_network_requests_and_bodies(site, config):
         listed = await s.ok("read_network_requests", url_pattern=".html")
         assert "page2.html" in listed and "network.html" not in listed
         assert "No request" in await s.err("network_request", request_id=data)
+
+
+async def test_network_route_stubs_or_fails_a_request(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/page2.html"):
+        assert "allow_request_mocking = true" in await s.err("network_route", url=f"{site}/data.json")
+        config(mocking=True)
+        stub = '{"greeting": "hello from the stub"}'
+        args = {"url": f"{site}/data.json", "action": "respond", "body": stub, "content_type": "application/json"}
+        routed = await s.ok("network_route", **args)
+        assert "until zenpilot disconnects" in routed
+        await s.ok("navigate", url=f"{site}/network.html")
+        await s.ok("wait_for", text="fetched: hello from the stub")
+
+        await s.ok("network_unroute", route_id=re.search(r"Route (\S+):", routed).group(1))
+        routed = await s.ok("network_route", url=f"{site}/data.json")
+        await s.ok("navigate", url=f"{site}/network.html")
+        await s.ok("wait_for", text="failed: TypeError")
+
+        await s.ok("network_unroute", route_id=re.search(r"Route (\S+):", routed).group(1))
+        await s.ok("navigate", url=f"{site}/network.html")
+        await s.ok("wait_for", text="fetched: hello from data.json")

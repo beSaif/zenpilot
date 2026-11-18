@@ -56,6 +56,10 @@ audit_redact_urls = false
 # Folders whose files the upload tool may put into a page's file inputs, e.g.
 # ["~/Documents/Applications"]. Subfolders count too. Empty: uploads are off.
 upload_dirs = []
+
+# true lets Claude make a tab's requests to a URL fail or return stub data it writes, to
+# test how a page copes (network_route). Only on allowlisted sites, until zenpilot disconnects.
+allow_request_mocking = false
 """
 
 # Pages that carry no site content and inherit nothing worth protecting.
@@ -82,6 +86,7 @@ class Config:
     report_dir: Path = Path("~/.local/state/zenpilot/reports").expanduser()
     audit_redact_urls: bool = False
     upload_dirs: list[Path] = field(default_factory=list)
+    allow_request_mocking: bool = False
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -108,6 +113,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         report_dir=Path(raw.get("report_dir", defaults["report_dir"])).expanduser(),
         audit_redact_urls=raw.get("audit_redact_urls", False) is True,
         upload_dirs=[Path(d).expanduser().resolve() for d in upload_dirs if d.strip()],
+        allow_request_mocking=raw.get("allow_request_mocking", False) is True,
     )
 
 

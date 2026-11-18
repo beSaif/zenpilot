@@ -73,6 +73,14 @@
       "description": "Save the requests read_network_requests lists for a tab as a HAR 1.2 file, e.g. to attach to a bug report."
     },
     {
+      "name": "network_route",
+      "description": "Make a tab's requests to url fail (abort) or get a stub response (respond), to test how the page copes."
+    },
+    {
+      "name": "network_unroute",
+      "description": "Stop a route network_route set up, so its requests reach the network again."
+    },
+    {
       "name": "click",
       "description": "Click an element by ref (from read_page) with a real mouse event."
     },

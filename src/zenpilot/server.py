@@ -96,6 +96,7 @@ ACTIONS = {
     "read_network_requests": ("Reading network requests", "Read network requests"),
     "network_request": ("Reading a network request", "Read a network request"),
     "har_export": ("Saving network requests", "Saved network requests"),
+    "network_route": ("Mocking a request", "Mocked a request"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
     "resize_window": ("Resizing the page", "Resized the page"),
@@ -147,6 +148,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
             cfg.allowlist += sorted(set(grants()) - set(cfg.allowlist))
             _cfg.set(cfg)
             browser.allowed = functools.partial(_allowed, cfg)  # which tabs' requests to record from now on
+            browser.mocking = cfg.allow_request_mocking  # turning it off stops existing routes too
             _domain.set(None)
             _call.set((fn.__name__, kwargs))
             _marked.set(None)
@@ -536,6 +538,55 @@ async def har_export(tab_id: str | None = None, path: str | None = None, include
         raise BrowserError(f"Couldn't save {target}: {e.strerror}.") from None
     with_bodies = f", {len(bodies)} with their response bodies," if include_bodies else ""
     return f"Saved {len(entries)} request{'s' * (len(entries) != 1)}{with_bodies} from {tab['id']} to {target}."
+
+
+def _check_mocking() -> None:
+    if not _cfg.get().allow_request_mocking:
+        raise Blocked(
+            "Request mocking is off. If the user wants it, ask them to set "
+            f"allow_request_mocking = true in {CONFIG_PATH}."
+        )
+
+
+@tool(mutates=True, redact=("body",))
+async def network_route(
+    url: str,
+    action: Literal["abort", "respond"] = "abort",
+    status: int = 200,
+    body: str = "",
+    content_type: str = "text/plain",
+    tab_id: str | None = None,
+) -> str:
+    """Make a tab's requests to url fail (abort) or get a stub response (respond), to test how the page copes.
+
+    url must match exactly, query included: no wildcards. respond answers with status, body and content_type.
+    It applies to that tab and its frames, and only while the tab is on an allowlisted site. Returns a route id
+    for network_unroute. Routes are kept in memory and end when zenpilot disconnects from Zen, after 2 minutes
+    without tool calls. Off unless the user set allow_request_mocking = true in zenpilot's config.
+    """
+    _check_mocking()
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise BrowserError(f"Only http(s) URLs can be routed, not '{url}'.")
+    if not 100 <= status <= 599:
+        raise BrowserError(f"status must be an HTTP status code from 100 to 599, not {status}.")
+    tab = await _tab(tab_id)
+    route_id = await browser.route(tab, url, action, status, body, content_type)
+    what = "fail" if action == "abort" else f"get a {status} {content_type} stub"
+    return (
+        f"Route {route_id}: requests to {url} in {tab['id']} now {what}. It lasts until network_unroute, "
+        "or until zenpilot disconnects from Zen after 2 minutes without tool calls."
+    )
+
+
+@tool(mutates=True)
+async def network_unroute(route_id: str) -> str:
+    """Stop a route network_route set up, so its requests reach the network again."""
+    _check_mocking()
+    if not await browser.unroute(route_id):
+        raise BrowserError(
+            f"No route {route_id}. Routes end when zenpilot disconnects from Zen, after 2 minutes without tool calls."
+        )
+    return f"Removed route {route_id}."
 
 
 async def _check_ref(key: str) -> None:
