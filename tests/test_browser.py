@@ -151,6 +151,21 @@ async def test_actions_report_what_changed_on_the_page():
     assert "didn't change" in await b._changes(ref)  # compared with the latest walk, not read_page's
 
 
+async def test_find_lists_only_matching_controls_with_usable_refs():
+    b = FakeBrowser([ctx("a", "https://shop.example.com/cart")])
+    await ids(b)
+    b.pages["a"] = [
+        Item(0, "form", "a"),
+        Item(1, '"Save money with a plan"', "a"),
+        Item(1, 'button "Save draft"', "a", "n1", 'button "Save draft"'),
+        Item(1, 'textbox "Email"', "a", "n2", 'textbox "Email"'),
+    ]
+    out = await b.read_page(await b.tab("t1"), lambda url: None, "SAVE")
+    assert out == 'r1 button "Save draft"'  # no plain text, no indent
+    assert b.refs.get("r1").shared_id == "n1" and b.refs.get("r1").url  # unique on the page, so found again
+    assert await b.read_page(await b.tab("t1"), lambda url: None, "checkout") == ""
+
+
 async def test_stop_on_the_badge_is_the_users_not_zenpilots_click():
     b = FakeBrowser([])
     stop = {"channel": "zenpilot", "data": {"type": "string", "value": "stop"}}

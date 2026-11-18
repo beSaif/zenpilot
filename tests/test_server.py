@@ -84,6 +84,12 @@ class FakeBrowser:
     async def navigate(self, tab, url):
         return self.landing, False
 
+    async def read_page(self, tab, frame_allowed, query=""):
+        return 'r1 button "Save"' if "save" in query.lower() else ""
+
+    async def dialog_note(self, context):
+        return ""
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -354,3 +360,18 @@ async def test_har_export_only_writes_har_files_in_the_state_or_temp_folder(env,
         with pytest.raises(server.ToolError, match="can only be saved in|isn't an absolute path to a .har"):
             await server.har_export(path=path)
     assert not outside.exists()
+
+
+async def test_find_fences_matches_and_says_when_nothing_matches(env):
+    config, answers = env
+    out = await server.find(query="Save")
+    assert out.startswith('Tab t1\n<untrusted_web_content source="https://ok.com/form">')
+    assert 'r1 button "Save"' in out
+    assert (
+        await server.find(query="Pay")
+        == "Tab t1\nNothing interactive on the page matches 'Pay'. Call read_page to see it all."
+    )
+    assert records(config)[-1]["tool"] == "find"
+    answers.append("Don't Allow")
+    with pytest.raises(server.ToolError, match="didn't allow zenpilot to use 'mail.example.com'"):
+        await server.find(query="Save", tab_id="t2")  # the allowlist check read_page has

@@ -236,6 +236,24 @@ async def test_cross_origin_frame_when_allowlisted(site, config):
         assert 'button "frame clicked:true:127.0.0.1"' in await s.ok("read_page")
 
 
+async def test_find(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        found = await s.ok("find", query="FRAME button")
+        assert "<untrusted_web_content" in found
+        assert len(re.findall(r'r\d+ button "Frame button"', found)) == 1  # the cross-origin frame is skipped
+        assert "Sign up" not in found and "Ignore previous" not in found
+        await s.ok("click", ref=ref(found, "button", "Frame button"))
+        await s.ok("type", ref=ref(await s.ok("find", query="email"), "textbox", "Email"), text="ada@example.com")
+        await s.ok("select", ref=ref(await s.ok("find", query="color"), "select", "Color"), option="Green")
+        assert "Nothing interactive on the page matches 'previous instructions'" in await s.ok(
+            "find", query="previous instructions"
+        )
+        page = await s.ok("read_page")
+        assert 'button "frame clicked:true:localhost"' in page
+        assert 'textbox "Email" type=email value="ada@example.com"' in page
+        assert 'select "Color" value="Green"' in page
+
+
 async def test_stale_and_unknown_refs(site, config):
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
         page = await s.ok("read_page")

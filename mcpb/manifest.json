@@ -53,6 +53,10 @@
       "description": "Outline of the page's visible interactive elements and text."
     },
     {
+      "name": "find",
+      "description": "List only the interactive elements whose read_page line contains query, ignoring case."
+    },
+    {
       "name": "read_console",
       "description": "Console messages and uncaught errors the page logged, oldest first, up to limit (max 200)."
     },

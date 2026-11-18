@@ -889,8 +889,11 @@ class Browser:
         items = [(Item(d, line, context, node and node["sharedId"], key), frame) for d, line, node, frame, key in out]
         return items, truncated
 
-    async def read_page(self, tab: dict, frame_allowed: Callable[[str], str | None]) -> str:
-        """Outline of the page; frame_allowed(url) returns a reason string to skip a frame."""
+    async def read_page(self, tab: dict, frame_allowed: Callable[[str], str | None], query: str = "") -> str:
+        """Outline of the page; frame_allowed(url) returns a reason string to skip a frame.
+
+        With a query, only the interactive lines containing it, or "" if none do.
+        """
         self.refs.drop_tab(tab["id"])
         items: list[Item] = []
         truncated = False
@@ -925,6 +928,10 @@ class Browser:
             truncated = False
             await collect(tab["context"], 0)
         mark_unique(items, tab["context"])
+        if query:
+            items = [replace(it, depth=0) for it in items if it.shared_id and query.lower() in it.line.lower()]
+            if not items:
+                return ""
         url = await self.url_of(tab["context"])  # where the refs were read, to find them again there only
         return render(items, self.refs, tab["id"], truncated, url, self._session)
 
