@@ -68,9 +68,11 @@ While Claude works in a tab, an orange glow goes around the page and a zenpilot 
 bottom-left corner says so. Press **Stop** on it and Claude stops and asks you what to do. If
 it tries again anyway, a popup asks whether to let it continue.
 
-Claude can open, switch and close tabs, go to a URL, read the page and its console errors, click,
-type, pick from dropdowns, hover, press keys, answer a page's alert, confirm and prompt dialogs,
-wait for text or a URL, scroll and take screenshots.
+Claude can open, switch and close tabs, go to a URL, read the page, its console errors and its
+network requests with their responses, click, type, pick from dropdowns, hover, press keys, answer
+a page's alert, confirm and prompt dialogs, wait for text or a URL, scroll and take screenshots.
+Network requests are only recorded on sites you've allowed and kept in memory, with the values of
+cookie and authorization headers left out.
 It can attach files to upload, but only from folders you list in `upload_dirs`. It can't touch
 cookies, passwords or downloads, and it can't run its own JavaScript.
 

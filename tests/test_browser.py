@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from zenpilot.bidi import BiDiError
-from zenpilot.browser import DIALOG_CHARS, Browser, BrowserError
+from zenpilot.browser import DIALOG_CHARS, NETWORK_LIMIT, Browser, BrowserError
 from zenpilot.tree import Item, Ref
 
 
@@ -412,3 +412,100 @@ async def test_a_frames_dialog_counts_for_its_tab_until_the_frame_navigates():
     assert "From the frame?" in await b.dialog_note("a")
     b._on_navigation({"context": "f"})  # its new site hasn't been checked
     assert await b.dialog_note("a") == ""
+
+
+def sent(context, rid, url, *, navigation=None, hops=0, headers=(), t=1000):
+    """A BiDi network.beforeRequestSent event, as Zen sends it."""
+    hs = [{"name": n, "value": {"type": "string", "value": v}} for n, v in headers]
+    req = {"request": rid, "url": url, "method": "GET", "headers": hs, "destination": "", "initiatorType": "fetch"}
+    return {"context": context, "navigation": navigation, "redirectCount": hops, "request": req, "timestamp": t}
+
+
+def done(context, rid, status=200, *, hops=0, t=1040):
+    """A BiDi network.responseCompleted event."""
+    res = {"status": status, "statusText": "OK", "protocol": "http/1.1", "mimeType": "application/json"}
+    res["headers"] = [{"name": "Set-Cookie", "value": {"type": "string", "value": "sid=1"}}]
+    return {"context": context, "redirectCount": hops, "request": {"request": rid}, "timestamp": t, "response": res}
+
+
+def network_browser():
+    """Tab a on an allowlisted site, tab b on one that isn't."""
+    b = FakeBrowser([])
+    b.allowed = lambda url: url.startswith("https://ok.com/")
+    b._pages = {"a": "https://ok.com/app", "b": "https://bank.example/"}
+    return b
+
+
+def test_only_allowlisted_tabs_requests_are_recorded():
+    b = network_browser()
+    b._on_request(sent("a", "1", "https://ok.com/api", headers=[("Authorization", "Bearer x"), ("Accept", "*/*")]))
+    b._on_response(done("a", "1"))
+    b._on_request(sent("b", "2", "https://bank.example/balance"))
+    b._on_response(done("b", "2"))
+    b._on_request(sent("frame", "3", "https://ok.com/frame-api"))  # a frame, not a tab
+    assert set(b._network) == {"a"}
+    [e] = b.requests({"context": "a"})
+    assert (e["id"], e["status"], e["ms"], e["type"]) == ("1", 200, 40, "fetch")
+    assert e["headers"] == [("Authorization", "[redacted]"), ("Accept", "*/*")]
+    assert e["response_headers"] == [("Set-Cookie", "[redacted]")]
+
+
+def test_navigation_starts_a_tabs_list_over_keeping_the_page_load():
+    b = network_browser()
+    b._on_request(sent("a", "1", "https://ok.com/api"))
+    b._on_request(sent("a", "2", "https://ok.com/next", navigation="n1"))
+    b._on_navigation({"context": "a", "navigation": "n1", "url": "https://ok.com/next"})
+    assert [e["id"] for e in b.requests({"context": "a"})] == ["2"]
+    # A page load to a blocked site isn't recorded, and the tab's list is dropped when it gets there.
+    b._on_request(sent("a", "3", "https://bank.example/", navigation="n2"))
+    b._on_navigation({"context": "a", "navigation": "n2", "url": "https://bank.example/"})
+    b._on_request(sent("a", "4", "https://ok.com/beacon"))
+    assert b.requests({"context": "a"}) == []
+    # Coming back from a blocked site: the page load counts for the page it loads.
+    b._on_request(sent("a", "5", "https://ok.com/", navigation="n3"))
+    b._on_navigation({"context": "a", "navigation": "n3", "url": "https://ok.com/"})
+    assert [e["id"] for e in b.requests({"context": "a"})] == ["5"]
+
+
+def test_requests_are_capped_per_tab_filtered_and_cleared():
+    b = network_browser()
+    for i in range(NETWORK_LIMIT + 5):
+        b._on_request(sent("a", str(i), f"https://ok.com/{i}.js"))
+    entries = b.requests({"context": "a"}, limit=NETWORK_LIMIT + 10)
+    assert len(entries) == NETWORK_LIMIT and entries[0]["id"] == "5"
+    assert [e["id"] for e in b.requests({"context": "a"}, url_pattern="/42.js")] == ["42"]
+    assert len(b.requests({"context": "a"}, limit=3, clear=True)) == 3
+    assert b.requests({"context": "a"}) == []
+
+
+def test_each_redirect_hop_is_its_own_request():
+    b = network_browser()
+    b._on_request(sent("a", "1", "https://ok.com/old"))
+    b._on_response(done("a", "1", 301))
+    b._on_request(sent("a", "1", "https://ok.com/new", hops=1))
+    b._on_response(done("a", "1", 200, hops=1))
+    assert [(e["id"], e["status"]) for e in b.requests({"context": "a"})] == [("1", 301), ("1.1", 200)]
+
+
+async def test_response_bodies_come_from_zens_data_collector():
+    b = network_browser()
+    b._on_request(sent("a", "1", "https://ok.com/api"))
+    entry = b.request({"context": "a"}, "1")
+    assert await b.response_body(entry) == (
+        None,
+        "this Zen can't keep response bodies (it lacks network.addDataCollector)",
+    )
+
+    calls = []
+
+    async def call(method, params=None, timeout=30):
+        calls.append((method, params))
+        if params["request"] == "gone":
+            raise BiDiError("no such network data", "not found")
+        return {"bytes": {"type": "base64", "value": "aGk="}}
+
+    b._collector, b.call = "col1", call
+    assert await b.response_body(entry) == (b"hi", "")
+    assert calls == [("network.getData", {"dataType": "response", "collector": "col1", "request": "1"})]
+    body, why = await b.response_body({**entry, "request": "gone"})
+    assert body is None and "no such network data" in why

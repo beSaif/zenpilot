@@ -17,7 +17,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import dialogs
 from .bidi import BiDiError
-from .browser import CONSOLE_LIMIT, Browser, BrowserError, FilesRefused
+from .browser import CONSOLE_LIMIT, NETWORK_LIMIT, Browser, BrowserError, FilesRefused
 from .report import SessionReport
 from .safety import (
     CONFIG_PATH,
@@ -65,7 +65,9 @@ browser = Browser()
 session_report = SessionReport(zen_version=zen_version())
 _launching = asyncio.Lock()
 DECLINE_MINUTES = 10
-CONSOLE_OUTPUT_CHARS = 20_000  # the most read_console returns
+CONSOLE_OUTPUT_CHARS = 20_000  # the most read_console and read_network_requests return
+URL_CHARS = 300  # of each URL read_network_requests lists
+BODY_CHARS = 20_000  # of the response body network_request shows
 _declined: dict[str, float] = {}  # domain -> when the user said no; not asked again for a while
 _stop_told = False  # Claude has been told about the user's Stop press
 STOPPED = (
@@ -88,6 +90,8 @@ ACTIONS = {
     "read_page": ("Reading the page", "Read the page"),
     "get_text": ("Reading the page", "Read the page"),
     "read_console": ("Reading the console", "Read the console"),
+    "read_network_requests": ("Reading network requests", "Read network requests"),
+    "network_request": ("Reading a network request", "Read a network request"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
     "click": ("Clicking {el}", "Clicked {el}"),
@@ -137,6 +141,7 @@ def tool(mutates: bool = False, redact: tuple[str, ...] = ()):
                 raise ToolError(f"zenpilot config error in {CONFIG_PATH}: {e}") from None
             cfg.allowlist += sorted(set(grants()) - set(cfg.allowlist))
             _cfg.set(cfg)
+            browser.allowed = functools.partial(_allowed, cfg)  # which tabs' requests to record from now on
             _domain.set(None)
             _call.set((fn.__name__, kwargs))
             _marked.set(None)
@@ -293,12 +298,16 @@ async def _tab(tab_id: str | None) -> dict:
     return tab
 
 
-def _frame_reason(url: str) -> str | None:
+def _allowed(cfg: Config, url: str) -> bool:
     try:
-        check_url(url, _cfg.get())
+        check_url(url, cfg)
     except Blocked:
-        return f"{domain_of(url)} not allowlisted"
-    return None
+        return False
+    return True
+
+
+def _frame_reason(url: str) -> str | None:
+    return None if _allowed(_cfg.get(), url) else f"{domain_of(url)} not allowlisted"
 
 
 @tool()
@@ -420,6 +429,65 @@ async def read_console(
     if len(text) > CONSOLE_OUTPUT_CHARS:
         text = "[older messages cut]\n" + text[-CONSOLE_OUTPUT_CHARS:]
     return f"Tab {tab['id']}\n" + untrusted(text, tab["url"])
+
+
+def _outcome(e: dict) -> str:
+    if e["error"]:
+        return f"failed ({e['error']})"
+    if e["status"] is None:
+        return "pending"
+    return f"{e['status']} {e['ms']}ms"
+
+
+@tool()
+async def read_network_requests(
+    tab_id: str | None = None, url_pattern: str | None = None, limit: int = 50, clear: bool = False
+) -> str:
+    """Requests the page made, oldest first, up to limit (max 500): id, method, status, type, time and URL.
+
+    Only the current page's, from while zenpilot was connected: the list starts over when the tab navigates
+    (keeping the request that loaded the new page), and zenpilot disconnects after 2 minutes without tool
+    calls. Requests from iframes aren't included. url_pattern keeps requests whose URL contains it. clear
+    empties the tab's list after reading it. network_request shows one request's headers and response body.
+    """
+    tab = await _tab(tab_id)
+    entries = browser.requests(tab, url_pattern, max(1, min(limit, NETWORK_LIMIT)), clear)
+    if not entries:
+        return f"Tab {tab['id']}\nNo requests recorded."
+    lines = [f"{e['id']} {e['method']} {_outcome(e)} {e['type']} {e['url'][:URL_CHARS]}" for e in entries]
+    text = "\n".join(lines)
+    if len(text) > CONSOLE_OUTPUT_CHARS:
+        text = "[older requests cut]\n" + text[-CONSOLE_OUTPUT_CHARS:]
+    return f"Tab {tab['id']}\n" + untrusted(text, tab["url"])
+
+
+@tool()
+async def network_request(request_id: str, tab_id: str | None = None) -> str:
+    """One request from read_network_requests: its headers and response body (cut at 20000 characters).
+
+    Cookies and authorization headers show as [redacted].
+    """
+    tab = await _tab(tab_id)
+    e = browser.request(tab, request_id)
+    if e is None:
+        raise BrowserError(
+            f"No request {request_id} in {tab['id']}. Ids come from read_network_requests, and the list starts "
+            "over when the tab navigates."
+        )
+    lines = [f"{e['method']} {e['url']}", f"{_outcome(e)}, type {e['type']}" + (f", {e['mime']}" if e["mime"] else "")]
+    for title, headers in (("Request headers", e["headers"]), ("Response headers", e["response_headers"])):
+        lines += [f"{title}:", *(f"  {name}: {value}" for name, value in headers)]
+    body, why = await browser.response_body(e)
+    try:
+        text = body.decode() if body is not None else None
+    except UnicodeDecodeError:
+        text, why = None, f"{len(body)} bytes of binary data"
+    if text is None:
+        lines.append(f"Response body not shown: {why}.")
+    else:
+        lines.append(f"Response body ({len(body)} bytes):")
+        lines.append(text[:BODY_CHARS] + (f"\n[cut at {BODY_CHARS} characters]" if len(text) > BODY_CHARS else ""))
+    return f"Tab {tab['id']}\n" + untrusted("\n".join(lines), tab["url"])
 
 
 async def _check_ref(key: str) -> None:

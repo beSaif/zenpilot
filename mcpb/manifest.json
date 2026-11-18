@@ -57,6 +57,14 @@
       "description": "Console messages and uncaught errors the page logged, oldest first, up to limit (max 200)."
     },
     {
+      "name": "read_network_requests",
+      "description": "Requests the page made, oldest first, up to limit (max 500): id, method, status, type, time and URL."
+    },
+    {
+      "name": "network_request",
+      "description": "One request from read_network_requests: its headers and response body (cut at 20000 characters)."
+    },
+    {
       "name": "click",
       "description": "Click an element by ref (from read_page) with a real mouse event."
     },

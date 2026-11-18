@@ -63,6 +63,9 @@ WAITING_SECONDS = 8  # with no tool call for this long, the badge says Claude ma
 READ_RETRIES = 3  # extra read_page attempts, 0.5s apart, while the page is near-empty
 CONSOLE_LIMIT = 200  # console entries kept per tab
 CONSOLE_CHARS = 2000  # of one entry's text or URL; pages can log strings of any size
+NETWORK_LIMIT = 500  # requests kept per tab
+BODY_BYTES = 1_000_000  # Zen keeps response bodies up to this size for network_request
+SECRET_HEADERS = {"cookie", "set-cookie", "authorization", "proxy-authorization"}  # never kept
 MAX_ADDED, MAX_REMOVED = 15, 8  # lines of page changes shown after an action
 DIALOG_CHARS = 1000  # of a dialog's message, which the page chooses
 # Without this, Zen dismisses alert, confirm and prompt dialogs by itself, so clicking "Delete"
@@ -348,6 +351,24 @@ def _stale(key: str) -> BrowserError:
     return StaleRef(f"Ref {key} is stale: the page changed since read_page. Call read_page again for fresh refs.")
 
 
+def _request_key(params: dict) -> str:
+    """A request's id. Redirects reuse the BiDi id, so each later hop gets a suffix: 12-3.1."""
+    hops = params.get("redirectCount", 0)
+    return params["request"]["request"] + (f".{hops}" if hops else "")
+
+
+def _headers(headers: list[dict] | None) -> list[tuple[str, str]]:
+    """BiDi headers as (name, value), with cookies and credentials redacted."""
+    out = []
+    for h in headers or []:
+        value = h.get("value") or {}
+        if h["name"].lower() in SECRET_HEADERS:
+            out.append((h["name"], "[redacted]"))
+        else:
+            out.append((h["name"], value.get("value", "") if value.get("type") == "string" else "[binary]"))
+    return out
+
+
 def _site(url: str) -> str:
     return urlsplit(url).hostname or ""
 
@@ -376,6 +397,10 @@ class Browser:
         self._console: dict[str, deque] = {}  # context -> its latest console messages and errors
         self._dialogs: dict[str, dict] = {}  # context -> the dialog open in it (userPromptOpened's params)
         self._frame_tops: dict[str, str] = {}  # frame context -> its tab's, for the frames read_page read
+        self.allowed: Callable[[str], bool] = lambda url: False  # may a page's requests be recorded; set per call
+        self._pages: dict[str, str] = {}  # tab context -> the URL of the page it shows
+        self._network: dict[str, dict[str, dict]] = {}  # tab context -> its page's requests by id, oldest first
+        self._collector: str | None = None  # Zen's store of response bodies for this session, if it has one
 
     # -- connection -------------------------------------------------------
 
@@ -413,9 +438,20 @@ class Browser:
                             "log.entryAdded",
                             "browsingContext.userPromptOpened",
                             "browsingContext.userPromptClosed",
+                            "network.beforeRequestSent",
+                            "network.responseCompleted",
+                            "network.fetchError",
                         ]
                     },
                 )
+                try:
+                    self._collector = (
+                        await bidi.send(
+                            "network.addDataCollector", {"dataTypes": ["response"], "maxEncodedDataSize": BODY_BYTES}
+                        )
+                    )["collector"]
+                except BiDiError:  # an older Zen: requests are listed, without bodies
+                    self._collector = None
             except BaseException:
                 await bidi.close()  # don't leave an orphaned session behind
                 raise
@@ -424,6 +460,10 @@ class Browser:
             bidi.on("browsingContext.navigationCommitted", self._on_navigation)
             bidi.on("browsingContext.userPromptOpened", lambda p: self._dialogs.update({p["context"]: p}))
             bidi.on("browsingContext.userPromptClosed", lambda p: self._dialogs.pop(p.get("context"), None))
+            bidi.on("browsingContext.contextCreated", self._on_created)
+            bidi.on("network.beforeRequestSent", self._on_request)
+            bidi.on("network.responseCompleted", self._on_response)
+            bidi.on("network.fetchError", self._on_response)
             self._bidi = bidi
 
     def _new_session(self, port: int) -> None:
@@ -456,6 +496,8 @@ class Browser:
                     pass
             await self._bidi.close()
         self._console.clear()  # the next session only sees messages logged from now on
+        self._network.clear()
+        self._pages.clear()
 
     @asynccontextmanager
     async def session(self, port: int):
@@ -565,10 +607,18 @@ class Browser:
         self._console.setdefault(context, deque(maxlen=CONSOLE_LIMIT)).append(entry)
 
     def _on_navigation(self, params: dict) -> None:
-        """Each page starts with an empty list, so one site's logs never show up under the next site's name."""
-        self._console.pop(params.get("context"), None)
+        """Each page starts with empty lists, so one site's logs never show up under the next site's name."""
+        context = params.get("context")
+        self._console.pop(context, None)
         # A frame's dialogs count for its tab again only once read_page has checked its new site.
-        self._frame_tops.pop(params.get("context"), None)
+        self._frame_tops.pop(context, None)
+        if context in self._pages:
+            self._pages[context] = url = params.get("url") or ""
+            # Of the old requests, only the one that loaded the new page belongs to it.
+            old = self._network.pop(context, {})
+            if self.allowed(url):
+                nav = params.get("navigation")
+                self._network[context] = {k: e for k, e in old.items() if nav and e["navigation"] == nav}
 
     def console(self, tab: dict, level: str | None = None, limit: int = 50, clear: bool = False) -> list[dict]:
         """The tab's latest entries, oldest first, optionally one level only. clear empties its buffer."""
@@ -577,6 +627,84 @@ class Browser:
         if clear:
             self._console.pop(tab["context"], None)
         return picked
+
+    def _on_created(self, params: dict) -> None:
+        if params.get("parent") is None:
+            self._pages[params["context"]] = params.get("url") or ""
+
+    def _on_request(self, params: dict) -> None:
+        """Record a tab's request if its page is allowlisted. A page load counts for the page it loads."""
+        context, req = params.get("context"), params["request"]
+        if context not in self._pages:  # a frame's, or a tab not seen yet
+            return
+        page = req["url"] if params.get("navigation") else self._pages[context]
+        if not self.allowed(page):
+            return
+        entries = self._network.setdefault(context, {})
+        key = _request_key(params)
+        entries[key] = {
+            "id": key,
+            "request": req["request"],
+            "navigation": params.get("navigation"),
+            "page": page,
+            "method": req.get("method", ""),
+            "url": req["url"],
+            "type": req.get("destination") or req.get("initiatorType") or "other",
+            "time": params.get("timestamp", 0),
+            "headers": _headers(req.get("headers")),
+            "status": None,
+            "status_text": "",
+            "protocol": "",
+            "mime": "",
+            "response_headers": [],
+            "size": None,
+            "ms": None,
+            "error": None,
+        }
+        if len(entries) > NETWORK_LIMIT:
+            del entries[next(iter(entries))]
+
+    def _on_response(self, params: dict) -> None:
+        """A recorded request finished: responseCompleted, or fetchError."""
+        entry = self._network.get(params.get("context"), {}).get(_request_key(params))
+        if entry is None:
+            return
+        entry["ms"] = max(0, params.get("timestamp", entry["time"]) - entry["time"])
+        if res := params.get("response"):
+            entry.update(
+                status=res.get("status"),
+                status_text=res.get("statusText", ""),
+                protocol=res.get("protocol", ""),
+                mime=res.get("mimeType", ""),
+                response_headers=_headers(res.get("headers")),
+                size=res.get("bodySize"),
+            )
+        else:
+            entry["error"] = params.get("errorText") or "failed"
+
+    def requests(self, tab: dict, url_pattern: str | None = None, limit: int = 50, clear: bool = False) -> list[dict]:
+        """The tab's latest requests, oldest first, optionally only those whose URL contains url_pattern."""
+        entries = self._network.get(tab["context"], {}).values()
+        picked = [e for e in entries if url_pattern is None or url_pattern in e["url"]][-limit:]
+        if clear:
+            self._network.pop(tab["context"], None)
+        return picked
+
+    def request(self, tab: dict, request_id: str) -> dict | None:
+        return self._network.get(tab["context"], {}).get(request_id.strip())
+
+    async def response_body(self, entry: dict) -> tuple[bytes | None, str]:
+        """The request's response body, kept by Zen, or None and why not."""
+        if self._collector is None:
+            return None, "this Zen can't keep response bodies (it lacks network.addDataCollector)"
+        params = {"dataType": "response", "collector": self._collector, "request": entry["request"]}
+        try:
+            data = (await self.call("network.getData", params))["bytes"]
+        except BiDiError as e:
+            return None, f"Zen didn't keep it ({e}); it keeps bodies up to {BODY_BYTES} bytes"
+        if data.get("type") == "base64":
+            return base64.b64decode(data["value"]), ""
+        return data.get("value", "").encode(), ""
 
     def _tab_dialogs(self, top: str) -> list[str]:
         """Contexts with a dialog open in the tab: itself, or a frame read_page read (Zen names the frame)."""
@@ -661,6 +789,8 @@ class Browser:
             for c in contexts
         ]
         live = {t["context"] for t in tabs}
+        for t in tabs:  # tabs from before this session, which no event has named yet
+            self._pages.setdefault(t["context"], t["url"])
         for ctx in [c for c in self._tab_ids if c not in live]:
             self.refs.drop_tab(self._tab_ids[ctx])
             del self._contexts[self._tab_ids.pop(ctx)]

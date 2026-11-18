@@ -431,3 +431,21 @@ async def test_page_dialogs_wait_for_handle_dialog(site, config):
 
         audit = config.audit.read_text()
         assert "Ada" not in audit  # a prompt's answer is typed text
+
+
+async def test_network_requests_and_bodies(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/network.html") as tab:
+        await s.ok("wait_for", text="fetched")
+        await asyncio.sleep(0.3)  # the 404's body may still be arriving
+        listed = await s.ok("read_network_requests")
+        assert re.search(rf"GET 200 \d+ms document {re.escape(site)}/network.html", listed)
+        assert re.search(rf"GET 404 \d+ms fetch {re.escape(site)}/missing.json", listed)
+        data = re.search(rf"(\S+) GET 200 \d+ms fetch {re.escape(site)}/data.json", listed).group(1)
+        detail = await s.ok("network_request", request_id=data)
+        assert detail.startswith(f"Tab {tab}\n<untrusted_web_content")
+        assert 'Response body (37 bytes):\n{"greeting": "hello from data.json"}' in detail
+
+        await s.ok("navigate", url=f"{site}/page2.html")
+        listed = await s.ok("read_network_requests", url_pattern=".html")
+        assert "page2.html" in listed and "network.html" not in listed
+        assert "No request" in await s.err("network_request", request_id=data)
