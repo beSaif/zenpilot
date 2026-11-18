@@ -71,7 +71,8 @@ it tries again anyway, a popup asks whether to let it continue.
 Claude can open, switch and close tabs, go to a URL, read the page, its console errors and its
 network requests with their responses, find a control by name, click, type, pick from dropdowns,
 hover, press keys, answer a page's alert, confirm and prompt dialogs, wait for text or a URL,
-scroll and take screenshots.
+scroll, take screenshots and resize a tab's page to check phone and tablet layouts (your window
+keeps its size).
 Network requests are only recorded on sites you've allowed and kept in memory, with the values of
 cookie and authorization headers left out. Claude can save them as a HAR file, in
 `~/.local/state/zenpilot/har/` or the temp folder, never overwriting one; response bodies are only

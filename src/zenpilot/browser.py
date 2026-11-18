@@ -1365,3 +1365,10 @@ class Browser:
             await self.run(ctx, SCROLL_JS_FALLBACK, dx, dy)
         _, h, x, y, sw, sh = await self.run(ctx, SCROLL_INFO_JS)
         return f"Scrolled {direction}. Viewport now at y={y:.0f} of {sh:.0f} (height {h:.0f}), x={x:.0f} of {sw:.0f}."
+
+    async def set_viewport(self, tab: dict, width: int | None, height: int | None) -> tuple[int, int]:
+        """Set the tab's viewport in CSS pixels, or reset it with None. Returns the page's new inner size."""
+        viewport = None if width is None else {"width": width, "height": height}
+        await self.call("browsingContext.setViewport", {"context": tab["context"], "viewport": viewport})
+        w, h, *_ = await self.run(tab["context"], SCROLL_INFO_JS)
+        return w, h

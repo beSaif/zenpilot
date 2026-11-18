@@ -105,6 +105,10 @@
       "description": "Scroll the page with the mouse wheel by amount pixels."
     },
     {
+      "name": "resize_window",
+      "description": "Set a tab's viewport to width x height CSS pixels (200 to 4000 each), e.g. to check a phone layout."
+    },
+    {
       "name": "screenshot",
       "description": "Screenshot of the visible part of a tab."
     },

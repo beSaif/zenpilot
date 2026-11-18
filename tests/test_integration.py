@@ -295,6 +295,30 @@ async def test_scroll(site, config):
         assert "y=0 " in await s.ok("scroll", direction="up", amount=5000)
 
 
+async def screenshot_width(s: Session) -> int:
+    """Width in pixels of the active tab's screenshot, from the JPEG's frame header."""
+    shot = await s.call("screenshot")
+    data = base64.b64decode(next(b for b in shot.content if b.type == "image").data)
+    i = 2
+    while data[i + 1] not in (0xC0, 0xC2):
+        i += 2 + int.from_bytes(data[i + 2 : i + 4])
+    return int.from_bytes(data[i + 7 : i + 9])
+
+
+async def test_resize_window(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html") as tab:
+        normal = await screenshot_width(s)
+        # The size is read back from the page's innerWidth and innerHeight.
+        assert f"Viewport of {tab} is now 400x700." in await s.ok("resize_window", width=400, height=700)
+        narrow = await screenshot_width(s)
+        assert narrow < normal and narrow % 400 == 0  # 400 CSS pixels at the screen's pixel ratio
+        await s.ok("navigate", url=f"{site}/page2.html")  # the size stays through navigations
+        assert await screenshot_width(s) == narrow
+        assert "(normal size)" in await s.ok("resize_window")
+        assert await screenshot_width(s) == normal
+        assert "between 200 and 4000" in await s.err("resize_window", width=100, height=700)
+
+
 async def test_read_only_mode_and_audit_log(site, config):
     async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
         page = await s.ok("read_page")

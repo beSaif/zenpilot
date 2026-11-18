@@ -90,6 +90,10 @@ class FakeBrowser:
     async def dialog_note(self, context):
         return ""
 
+    async def set_viewport(self, tab, width, height):
+        self.viewport = (tab["id"], width, height)
+        return (width, height) if width else (1200, 800)
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -375,3 +379,31 @@ async def test_find_fences_matches_and_says_when_nothing_matches(env):
     answers.append("Don't Allow")
     with pytest.raises(server.ToolError, match="didn't allow zenpilot to use 'mail.example.com'"):
         await server.find(query="Save", tab_id="t2")  # the allowlist check read_page has
+
+
+async def test_resize_window_sets_and_resets_the_viewport_even_in_read_only_mode(env):
+    config, _ = env
+    config.read_only = True  # it changes how the page is laid out, not what's on it
+    assert await server.resize_window(width=390, height=844) == "Viewport of t1 is now 390x844."
+    assert server.browser.viewport == ("t1", 390, 844)
+    assert await server.resize_window() == "Viewport of t1 is now 1200x800 (normal size)."
+    assert server.browser.viewport == ("t1", None, None)
+    assert server.browser.actions[-1] == "Resized the page"
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [({"width": 390}, "Give both width and height"), ({"width": 199, "height": 800}, "between 200 and 4000")],
+)
+async def test_resize_window_refuses_bad_sizes(env, args, message):
+    with pytest.raises(server.ToolError, match=message):
+        await server.resize_window(**args)
+    assert not hasattr(server.browser, "viewport")
+
+
+async def test_resize_window_only_works_on_allowed_sites(env):
+    config, _ = env
+    config.prompts = False
+    with pytest.raises(server.ToolError, match="mail.example.com"):
+        await server.resize_window(width=390, height=844, tab_id="t2")
+    assert not hasattr(server.browser, "viewport")

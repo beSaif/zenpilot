@@ -83,6 +83,7 @@ _call: ContextVar[tuple[str, dict]] = ContextVar("call", default=("", {}))
 _marked: ContextVar[str | None] = ContextVar("marked", default=None)  # the tab context the badge shows this call on
 
 WAIT_MIN_MS, WAIT_MAX_MS = 100, 30_000
+VIEWPORT_MIN, VIEWPORT_MAX = 200, 4000
 
 # What the badge says a tool is doing, then has done. {el} is the element's name, {site} the URL's site.
 ACTIONS = {
@@ -97,6 +98,7 @@ ACTIONS = {
     "har_export": ("Saving network requests", "Saved network requests"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
+    "resize_window": ("Resizing the page", "Resized the page"),
     "click": ("Clicking {el}", "Clicked {el}"),
     "type": ("Typing in {el}", "Typed in {el}"),
     "select": ("Choosing {option}", "Chose {option}"),
@@ -643,6 +645,23 @@ async def scroll(
     """Scroll the page with the mouse wheel by amount pixels."""
     tab = await _tab(tab_id)
     return await browser.scroll(tab, direction, max(1, min(amount, 10_000)))
+
+
+@tool()
+async def resize_window(width: int | None = None, height: int | None = None, tab_id: str | None = None) -> str:
+    """Set a tab's viewport to width x height CSS pixels (200 to 4000 each), e.g. to check a phone layout.
+
+    Only the page inside that tab changes size; Zen's window stays as it is. The size stays through
+    reloads and navigations in the tab, even after zenpilot disconnects, until you call resize_window
+    without width and height. Do that when you're done.
+    """
+    if (width is None) != (height is None):
+        raise BrowserError("Give both width and height, or neither to reset the tab to its normal size.")
+    if width is not None and not all(VIEWPORT_MIN <= n <= VIEWPORT_MAX for n in (width, height)):
+        raise BrowserError(f"width and height must each be between {VIEWPORT_MIN} and {VIEWPORT_MAX}.")
+    tab = await _tab(tab_id)
+    w, h = await browser.set_viewport(tab, width, height)
+    return f"Viewport of {tab['id']} is now {w:.0f}x{h:.0f}" + (" (normal size)." if width is None else ".")
 
 
 @tool()

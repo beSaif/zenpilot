@@ -524,3 +524,26 @@ async def test_response_bodies_come_from_zens_data_collector():
     assert calls == [("network.getData", {"dataType": "response", "collector": "col1", "request": "1"})]
     body, why = await b.response_body({**entry, "request": "gone"})
     assert body is None and "no such network data" in why
+
+
+class ViewportBrowser(FakeBrowser):
+    """Records setViewport and answers the page's inner size."""
+
+    async def call(self, method, params=None, timeout=30):
+        if method != "browsingContext.setViewport":
+            return await super().call(method, params, timeout)
+        self.viewport = params
+        return {}
+
+    async def run(self, context, fn, *args, timeout=15):
+        size = self.viewport["viewport"] or {"width": 1200, "height": 800}
+        return [size["width"], size["height"], 0, 0, 0, 0]
+
+
+async def test_set_viewport_sizes_one_tab_and_resets_it_with_null():
+    b = ViewportBrowser([ctx("a", "https://shop.example.com/"), ctx("b", "https://mail.example.com/")])
+    tab = await b.tab("t2")
+    assert await b.set_viewport(tab, 390, 844) == (390, 844)
+    assert b.viewport == {"context": "b", "viewport": {"width": 390, "height": 844}}
+    assert await b.set_viewport(tab, None, None) == (1200, 800)
+    assert b.viewport == {"context": "b", "viewport": None}
