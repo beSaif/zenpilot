@@ -2,6 +2,7 @@
 
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 
@@ -275,7 +276,8 @@ def test_the_fake_browser_only_fakes_what_browser_has():
 
 def request_row(id_, url, **kw):
     row = {"id": id_, "request": id_, "method": "GET", "url": url, "type": "fetch", "status": 200, "ms": 12}
-    return row | {"error": None, "mime": "application/json", "headers": [], "response_headers": []} | kw
+    row |= {"error": None, "mime": "application/json", "headers": [], "response_headers": [], "page": "https://ok.com/"}
+    return row | {"time": 1_700_000_000_000, "protocol": "http/1.1", "status_text": "OK", "size": 8} | kw
 
 
 async def test_read_network_requests_lists_fenced_requests(env):
@@ -311,3 +313,44 @@ async def test_network_request_shows_headers_and_the_body_or_why_not(env):
 async def test_each_call_tells_the_browser_which_pages_requests_to_record(env):
     await server.read_network_requests()
     assert server.browser.allowed("https://ok.com/x") and not server.browser.allowed("https://mail.example.com/")
+
+
+async def test_har_export_writes_allowlisted_requests_without_bodies_by_default(env, state_dir):
+    server.browser.request_rows = [
+        request_row("1", "https://ok.com/api?q=1", headers=[("Cookie", "[redacted]")]),
+        request_row("2", "https://ok.com/old", status=301, response_headers=[("Location", "/new")]),
+        request_row("3", "https://ok.com/x", page="https://mail.example.com/"),  # recorded before a block
+    ]
+    out = await server.har_export()
+    path = Path(out.split(" to ")[1].rstrip("."))
+    assert out.startswith("Saved 2 requests from t1 to ") and path.parent == state_dir / "har"
+    log = json.loads(path.read_text())["log"]
+    assert log["version"] == "1.2" and log["creator"]["name"] == "zenpilot"
+    first, second = log["entries"]
+    assert first["startedDateTime"] == "2023-11-14T22:13:20.000+00:00" and first["time"] == 12
+    assert first["request"]["queryString"] == [{"name": "q", "value": "1"}]
+    assert first["request"]["headers"] == [{"name": "Cookie", "value": "[redacted]"}]
+    assert first["response"]["content"] == {"size": 8, "mimeType": "application/json"}
+    assert second["response"]["redirectURL"] == "/new"
+
+
+async def test_har_export_caps_bodies_and_never_overwrites(env, tmp_path):
+    server.browser.request_rows = [request_row("1", "https://ok.com/api")]
+    server.browser.body = (b"x" * 200_000, "")
+    target = tmp_path / "capture.har"
+    out = await server.har_export(path=str(target), include_bodies=True)
+    assert out == f"Saved 1 request, 1 with their response bodies, from t1 to {target.resolve()}."
+    content = json.loads(target.read_text())["log"]["entries"][0]["response"]["content"]
+    assert content["text"] == "x" * 100_000 and "200000 bytes" in content["comment"]
+    with pytest.raises(server.ToolError, match="already exists"):
+        await server.har_export(path=str(target))
+
+
+async def test_har_export_only_writes_har_files_in_the_state_or_temp_folder(env, tmp_path):
+    outside = Path.home() / "zenpilot-test.har"
+    link = tmp_path / "link.har"
+    link.symlink_to(outside)
+    for path in [str(outside), str(link), str(tmp_path / "capture.json"), "capture.har"]:
+        with pytest.raises(server.ToolError, match="can only be saved in|isn't an absolute path to a .har"):
+            await server.har_export(path=path)
+    assert not outside.exists()

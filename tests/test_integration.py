@@ -445,6 +445,15 @@ async def test_network_requests_and_bodies(site, config):
         assert detail.startswith(f"Tab {tab}\n<untrusted_web_content")
         assert 'Response body (37 bytes):\n{"greeting": "hello from data.json"}' in detail
 
+        saved = await s.ok("har_export", include_bodies=True)
+        path = Path(re.search(r" to (/.+\.har)\.$", saved).group(1))
+        assert path.parent.resolve() == (config.state / "har").resolve()
+        entries = {e["request"]["url"]: e for e in json.loads(path.read_text())["log"]["entries"]}
+        assert entries[f"{site}/data.json"]["response"]["content"]["text"] == '{"greeting": "hello from data.json"}\n'
+        assert entries[f"{site}/missing.json"]["response"]["status"] == 404
+        assert "already exists" in await s.err("har_export", path=str(path))
+        assert "can only be saved in" in await s.err("har_export", path=str(Path.home() / "capture.har"))
+
         await s.ok("navigate", url=f"{site}/page2.html")
         listed = await s.ok("read_network_requests", url_pattern=".html")
         assert "page2.html" in listed and "network.html" not in listed

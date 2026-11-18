@@ -15,7 +15,7 @@ import anyio
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import dialogs
+from . import dialogs, har
 from .bidi import BiDiError
 from .browser import CONSOLE_LIMIT, NETWORK_LIMIT, Browser, BrowserError, FilesRefused
 from .report import SessionReport
@@ -92,6 +92,7 @@ ACTIONS = {
     "read_console": ("Reading the console", "Read the console"),
     "read_network_requests": ("Reading network requests", "Read network requests"),
     "network_request": ("Reading a network request", "Read a network request"),
+    "har_export": ("Saving network requests", "Saved network requests"),
     "screenshot": ("Looking at the page", "Looked at the page"),
     "scroll": ("Scrolling", "Scrolled"),
     "click": ("Clicking {el}", "Clicked {el}"),
@@ -488,6 +489,34 @@ async def network_request(request_id: str, tab_id: str | None = None) -> str:
         lines.append(f"Response body ({len(body)} bytes):")
         lines.append(text[:BODY_CHARS] + (f"\n[cut at {BODY_CHARS} characters]" if len(text) > BODY_CHARS else ""))
     return f"Tab {tab['id']}\n" + untrusted("\n".join(lines), tab["url"])
+
+
+@tool()
+async def har_export(tab_id: str | None = None, path: str | None = None, include_bodies: bool = False) -> str:
+    """Save the requests read_network_requests lists for a tab as a HAR 1.2 file, e.g. to attach to a bug report.
+
+    It goes in zenpilot's har folder, or at path: an absolute path ending in .har, in zenpilot's state
+    folder or the temp folder. Existing files are never overwritten. Response bodies are left out unless
+    include_bodies, and cut at 100 KB each. Cookie and authorization header values show as [redacted].
+    """
+    tab = await _tab(tab_id)
+    target = har.target(path, tab["id"])
+    cfg = _cfg.get()
+    entries = [e for e in browser.requests(tab, limit=NETWORK_LIMIT) if _allowed(cfg, e["page"])]
+    bodies = {}
+    if include_bodies:
+        for e in entries:
+            body, _ = await browser.response_body(e)
+            if body is not None:
+                bodies[e["id"]] = body
+    try:
+        har.write(target, entries, bodies)
+    except FileExistsError:
+        raise Blocked(f"{target} already exists, and zenpilot never overwrites files. Give another path.") from None
+    except OSError as e:
+        raise BrowserError(f"Couldn't save {target}: {e.strerror}.") from None
+    with_bodies = f", {len(bodies)} with their response bodies," if include_bodies else ""
+    return f"Saved {len(entries)} request{'s' * (len(entries) != 1)}{with_bodies} from {tab['id']} to {target}."
 
 
 async def _check_ref(key: str) -> None:

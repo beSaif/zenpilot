@@ -65,6 +65,10 @@
       "description": "One request from read_network_requests: its headers and response body (cut at 20000 characters)."
     },
     {
+      "name": "har_export",
+      "description": "Save the requests read_network_requests lists for a tab as a HAR 1.2 file, e.g. to attach to a bug report."
+    },
+    {
       "name": "click",
       "description": "Click an element by ref (from read_page) with a real mouse event."
     },

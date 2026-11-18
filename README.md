@@ -72,7 +72,9 @@ Claude can open, switch and close tabs, go to a URL, read the page, its console 
 network requests with their responses, click, type, pick from dropdowns, hover, press keys, answer
 a page's alert, confirm and prompt dialogs, wait for text or a URL, scroll and take screenshots.
 Network requests are only recorded on sites you've allowed and kept in memory, with the values of
-cookie and authorization headers left out.
+cookie and authorization headers left out. Claude can save them as a HAR file, in
+`~/.local/state/zenpilot/har/` or the temp folder, never overwriting one; response bodies are only
+included if asked for.
 It can attach files to upload, but only from folders you list in `upload_dirs`. It can't touch
 cookies, passwords or downloads, and it can't run its own JavaScript.
 
