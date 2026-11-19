@@ -13,7 +13,7 @@
 Let Claude use your [Zen browser](https://zen-browser.app). Works with Claude Desktop and
 Claude Code, kind of like Claude in Chrome but for Zen.
 
-![zenpilot demo: install, set up, then Claude fills in and submits a form in Zen](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)
+![zenpilot demo: Claude fills in a Mozilla job application in Zen from a CV, then stops before Submit](https://raw.githubusercontent.com/beSaif/zenpilot/main/docs/demo.gif)
 
 There's no browser extension. zenpilot opens Zen with its remote control turned on and
 talks to it directly.
