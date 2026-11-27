@@ -118,7 +118,7 @@
     },
     {
       "name": "screenshot",
-      "description": "Screenshot of the visible part of a tab."
+      "description": "Screenshot of the visible part of a tab, or of one element by ref (tab_id is then ignored)."
     },
     {
       "name": "get_text",

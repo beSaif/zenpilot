@@ -101,6 +101,10 @@ class FakeBrowser:
     async def unroute(self, route_id):
         return route_id == "route1"
 
+    async def screenshot(self, tab, key=None, max_size=1024):
+        self.shot = (tab["id"], key, max_size)
+        return b"\xff\xd8", "Scaled down." if max_size < 4000 else ""
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -444,3 +448,32 @@ async def test_network_route_and_unroute(env):
     assert await server.network_unroute(route_id="route1") == "Removed route route1."
     with pytest.raises(server.ToolError, match="No route route9. Routes end when zenpilot disconnects"):
         await server.network_unroute(route_id="route9")
+
+
+async def test_screenshot_clamps_max_size_and_passes_the_scaling_note_on(env):
+    image, note = await server.screenshot(max_size=99999)
+    assert server.browser.shot == ("t1", None, 4000)
+    assert note.startswith("Screenshot of https://ok.com/form.") and "untrusted" in note
+    await server.screenshot(max_size=1)
+    assert server.browser.shot == ("t1", None, 320)
+
+
+async def test_screenshot_of_a_ref_checks_its_site_and_names_it(env):
+    server.browser.ref = lambda key: type("R", (), {"tab": "t1"})()
+    _, note = await server.screenshot(ref="r1", tab_id="t2")  # the ref's tab wins
+    assert server.browser.shot == ("t1", "r1", 1024)
+    assert note.startswith("Screenshot of r1 in https://ok.com/form.") and note.endswith("Scaled down.")
+    assert server.browser.actions[-1] == "Looked at the page"
+
+
+async def test_screenshot_of_a_ref_on_a_blocked_site_is_refused(env):
+    config, _ = env
+    config.prompts = False
+    server.browser.ref_url = lambda key: _async("https://mail.example.com/")
+    with pytest.raises(server.ToolError, match="mail.example.com"):
+        await server.screenshot(ref="r1")
+    assert not hasattr(server.browser, "shot")
+
+
+async def _async(value):
+    return value
