@@ -639,3 +639,66 @@ async def test_unroute_removes_the_intercept_and_reconnecting_forgets_routes():
     assert await answers(b, blocked("a", "1", "https://ok.com/api", route)) == [go_on("1")]
     b._new_session(9222)  # Zen dropped the old session's intercepts
     assert not await b.unroute(other)
+
+
+class ShotBrowser(FakeBrowser):
+    """Records BiDi calls; the page is box (CSS pixels and device pixel ratio), an element's or the viewport's."""
+
+    def __init__(self, contexts, box):
+        super().__init__(contexts)
+        self.box, self.calls = box, []
+
+    async def call(self, method, params=None, timeout=30):
+        if method == "browsingContext.getTree":
+            return await super().call(method, params, timeout)
+        self.calls.append((method, params))
+        return {"data": "/9j/"} if method == "browsingContext.captureScreenshot" else {}
+
+    async def run(self, context, fn, *args, timeout=15):
+        return self.box if args else None  # BOX_JS takes the element; REPAINT_JS nothing
+
+    async def _badge(self, context, state, action=None):
+        pass
+
+
+async def test_a_large_screenshot_is_taken_at_a_lower_pixel_ratio_then_restored():
+    b = ShotBrowser([ctx("a", "https://shop.example.com/")], [1440, 900, 2])
+    data, note = await b.screenshot(await b.tab("t1"), max_size=1024)
+    assert data[:2] == b"\xff\xd8"
+    assert [m for m, _ in b.calls] == [
+        "browsingContext.setViewport",
+        "browsingContext.captureScreenshot",
+        "browsingContext.setViewport",
+    ]
+    assert b.calls[0][1]["devicePixelRatio"] == pytest.approx(1024 / 1440)  # 2880 pixels wide becomes 1024
+    assert b.calls[2][1] == {"context": "a", "devicePixelRatio": None}
+    assert "viewport" not in b.calls[0][1]  # a size resize_window set stays
+    assert "raise max_size" in note
+
+
+async def test_a_small_screenshot_is_taken_as_is():
+    b = ShotBrowser([ctx("a", "https://shop.example.com/")], [800, 600, 1])
+    _, note = await b.screenshot(await b.tab("t1"), max_size=1024)
+    assert [m for m, _ in b.calls] == ["browsingContext.captureScreenshot"]
+    assert note == ""
+
+
+async def test_a_ref_screenshot_clips_to_its_element():
+    b = ShotBrowser([ctx("a", "https://shop.example.com/")], [200, 40, 2])
+    await b.tabs(probe=False)
+    key = b.refs.add(Ref("t1", "a", "node-1", 'button "Pay"', "", b._session))
+    await b.screenshot(await b.tab("t1"), key, 1024)
+    ((method, params),) = b.calls
+    assert method == "browsingContext.captureScreenshot"
+    assert params["clip"] == {"type": "element", "element": {"sharedId": "node-1"}}
+    assert params["origin"] == "document"  # scrolled out of view is fine
+
+
+@pytest.mark.parametrize(("box", "message"), [(None, "is stale"), ([0, 0, 1], "no longer visible")])
+async def test_a_ref_screenshot_of_a_gone_element_is_refused(box, message):
+    b = ShotBrowser([ctx("a", "https://shop.example.com/")], box)
+    await b.tabs(probe=False)
+    key = b.refs.add(Ref("t1", "a", "node-1", 'button "Pay"', "", b._session))
+    with pytest.raises(BrowserError, match=message):
+        await b.screenshot(await b.tab("t1"), key)
+    assert b.calls == []

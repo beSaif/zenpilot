@@ -134,6 +134,19 @@ BADGE_JS = """(state, send, action) => {
 }""".replace("LOGO", (files("zenpilot") / "logo.svg").read_text().strip())
 
 # Scrolls the element into view and reports anything covering its center.
+SHOT_MAX = 1024  # default longer side of a screenshot, in pixels: about 870 tokens for a 16:10 viewport
+# An element's size, or the viewport's without one, in CSS pixels, with the device pixel ratio. null if detached.
+BOX_JS = """(el) => {
+  if (el && !el.isConnected) return null;
+  const r = el ? el.getBoundingClientRect() : {width: innerWidth, height: innerHeight};
+  return [r.width, r.height, devicePixelRatio];
+}"""
+# Wait for a repaint after a pixel ratio change; background tabs don't run animation frames, so not forever.
+REPAINT_JS = """() => new Promise((done) => {
+  requestAnimationFrame(() => requestAnimationFrame(done));
+  setTimeout(done, 200);
+})"""
+
 PREPARE_JS = """(el) => {
   if (!el.isConnected) return ["stale", "", "", ""];
   el.scrollIntoView({block: "center", inline: "center", behavior: "instant"});
@@ -989,19 +1002,52 @@ class Browser:
             text += f"\n[truncated: showing {max_chars} of {length} characters]"
         return title, text or "[no text]"
 
-    async def screenshot(self, tab: dict) -> bytes:
-        await self._badge(tab["context"], "hidden")
+    async def screenshot(self, tab: dict, key: str | None = None, max_size: int = SHOT_MAX) -> tuple[bytes, str]:
+        """JPEG of the tab's viewport, or of the ref's element, its longer side at most max_size pixels.
+
+        Returns (image, note): the note says when the ref was found again or the image was scaled down.
+        """
+        params = {"format": {"type": "image/jpeg", "quality": 0.8}}
+        note = ""
+        if key:
+            ref, (w, h, dpr), note = await self._target(key, self._box)
+            context, top = ref.context, self.top_context(ref)
+            params |= {"origin": "document", "clip": {"type": "element", "element": {"sharedId": ref.shared_id}}}
+        else:
+            context = top = tab["context"]
+            w, h, dpr = await self.run(context, BOX_JS, None)
+        # A lower device pixel ratio renders fewer pixels for the same CSS layout, so the page doesn't reflow.
+        scale = min(1.0, max_size / (max(w, h) * dpr))
+        await self._badge(top, "hidden")
         try:
-            r = await self.call(
-                "browsingContext.captureScreenshot",
-                {
-                    "context": tab["context"],
-                    "format": {"type": "image/jpeg", "quality": 0.8},
-                },
-            )
+            if scale < 1:
+                await self.call("browsingContext.setViewport", {"context": top, "devicePixelRatio": dpr * scale})
+                await self.run(top, REPAINT_JS)
+            r = await self.call("browsingContext.captureScreenshot", {"context": context, **params})
         finally:
-            await self.mark(tab["context"])
-        return base64.b64decode(r["data"])
+            if scale < 1:
+                try:
+                    await self.call("browsingContext.setViewport", {"context": top, "devicePixelRatio": None})
+                except (BrowserError, BiDiError):
+                    pass
+            await self.mark(top)
+        if scale < 1:
+            note += f" Scaled down to {max_size} pixels on its longer side; raise max_size if details are too small."
+        return base64.b64decode(r["data"]), note.strip()
+
+    async def _box(self, key: str, ref: Ref) -> list:
+        """The ref's element's size in CSS pixels and the page's device pixel ratio."""
+        try:
+            box = await self.run(ref.context, BOX_JS, {"sharedId": ref.shared_id})
+        except BiDiError as e:
+            if e.error in STALE_ERRORS:
+                raise _stale(key) from None
+            raise
+        if box is None:
+            raise _stale(key)
+        if not (box[0] and box[1]):
+            raise StaleRef(f"Ref {key} is no longer visible. Call read_page again.")
+        return box
 
     # -- input ----------------------------------------------------------------
 

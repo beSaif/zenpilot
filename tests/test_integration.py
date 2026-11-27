@@ -298,12 +298,29 @@ async def test_scroll(site, config):
 
 async def screenshot_width(s: Session) -> int:
     """Width in pixels of the active tab's screenshot, from the JPEG's frame header."""
-    shot = await s.call("screenshot")
+    return (await screenshot_size(s, max_size=4000))[0]  # full size: the test compares pixel ratios
+
+
+async def screenshot_size(s: Session, **args) -> tuple[int, int]:
+    """Width and height in pixels of a screenshot, from the JPEG's frame header."""
+    shot = await s.call("screenshot", **args)
     data = base64.b64decode(next(b for b in shot.content if b.type == "image").data)
     i = 2
     while data[i + 1] not in (0xC0, 0xC2):
         i += 2 + int.from_bytes(data[i + 2 : i + 4])
-    return int.from_bytes(data[i + 7 : i + 9])
+    return int.from_bytes(data[i + 7 : i + 9]), int.from_bytes(data[i + 5 : i + 7])
+
+
+async def test_screenshots_are_scaled_down_or_clipped_to_a_ref(site, config):
+    async with zenpilot(config) as s, fixture_tab(s, f"{site}/index.html"):
+        await s.ok("resize_window", width=1440, height=900)
+        assert 1020 <= max(await screenshot_size(s)) <= 1024  # the default longer side, give or take rounding
+        assert 496 <= max(await screenshot_size(s, max_size=500)) <= 500
+        inner = await s.ok("read_page")
+        w, h = await screenshot_size(s, ref=ref(inner, "button", "Check trust"))
+        assert w < 400 and h < 200  # just the button
+        assert max(await screenshot_size(s, max_size=4000)) >= 1440  # the pixel ratio was put back
+        await s.ok("resize_window")
 
 
 async def test_resize_window(site, config):
